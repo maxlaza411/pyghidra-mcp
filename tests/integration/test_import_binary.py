@@ -67,6 +67,7 @@ async def test_import_binary(test_binary_for_import, server_params_no_input):
 
             content = response.content[0].text
             assert test_binary_for_import in content
+            assert "background. When ready" in content
 
             ready = False
             for _ in range(240):

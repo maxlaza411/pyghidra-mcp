@@ -71,3 +71,17 @@ async def test_sse_client_smoke(sse_server):
             assert len(content.keys()) == len(DecompiledFunction.model_fields.keys())
             assert "entry" in content["code"]
             print(json.dumps(content, indent=2))
+
+
+@pytest.mark.asyncio
+async def test_sse_health_endpoint(sse_server):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{base_url}/health") as response:
+            assert response.status == 200
+            payload = await response.json()
+
+    assert payload["status"] == "ready"
+    assert payload["program_count"] >= 1
+    assert 0 <= payload["analyzed_programs"] <= payload["program_count"]
+    assert payload["project_name"]
+    assert payload["project_path"]
