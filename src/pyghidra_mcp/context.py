@@ -97,6 +97,8 @@ class PyGhidraContext:
         gzfs_path: str | Path | None = None,
         threaded: bool = True,
         max_workers: int = multiprocessing.cpu_count(),
+        *,
+        auto_open: bool = True,
     ):
         """
         Initializes a new Ghidra project context.
@@ -112,20 +114,23 @@ class PyGhidraContext:
             gzfs_path: Location to store GZFs of analyzed binaries.
             threaded: Use threading during analysis.
             max_workers: Number of workers for threaded analysis.
+            auto_open: When ``True`` (default), automatically attach to the requested
+                project. Set to ``False`` when the caller will invoke :meth:`open_project`
+                manually.
         """
         from ghidra.base.project import GhidraProject
 
         self.project_name = project_name
         self.project_path = Path(project_path)
-        self.project: GhidraProject = self._get_or_create_project()
+        self.project: GhidraProject | None = None
         self.programs: dict[str, ProgramInfo] = {}
         self.active_program_name: str | None = None
 
-        project_dir = self.project_path / self.project_name
-        chromadb_path = project_dir / "chromadb"
-        self.chroma_client = chromadb.PersistentClient(
-            path=str(chromadb_path), settings=Settings(anonymized_telemetry=False)
-        )
+        self.chroma_client: chromadb.PersistentClient | None = None
+        self._uses_default_gzfs_path = gzfs_path is None
+        self.gzfs_path = Path(gzfs_path) if gzfs_path else None
+        if self.gzfs_path is not None:
+            self.gzfs_path.mkdir(exist_ok=True, parents=True)
 
         # From GhidraDiffEngine
         self.force_analysis = force_analysis
@@ -133,9 +138,6 @@ class PyGhidraContext:
         self.no_symbols = no_symbols
         self.gdts = gdts if gdts is not None else []
         self.program_options = program_options
-        self.gzfs_path = Path(gzfs_path) if gzfs_path else self.project_path / "gzfs"
-        if self.gzfs_path:
-            self.gzfs_path.mkdir(exist_ok=True, parents=True)
 
         self.threaded = threaded
         self.max_workers = max_workers
@@ -143,16 +145,74 @@ class PyGhidraContext:
             logger.warning("--no-threaded flag forcing max_workers to 1")
             self.max_workers = 1
 
+        if auto_open:
+            self.open_project(self.project_path, self.project_name)
+
     def close(self, save: bool = True):
         """
         Saves changes to all open programs and closes the project.
         """
-        for _program_name, program_info in self.programs.items():
-            program = program_info.program
-            self.project.close(program)
+        project = getattr(self, "project", None)
+        if project is None:
+            return
 
-        self.project.close()
-        logger.info(f"Project {self.project_name} closed.")
+        try:
+            for program_info in self.programs.values():
+                project.close(program_info.program)
+
+            project.close()
+            logger.info(f"Project {self.project_name} closed.")
+        finally:
+            self.project = None
+            self.chroma_client = None
+            self.active_program_name = None
+            self.programs.clear()
+
+    def open_project(self, project_path: Path, project_name: str):
+        """Attach the context to a specific project on disk."""
+
+        project_path = Path(project_path)
+
+        if self.project is not None:
+            try:
+                self.close()
+            except Exception:  # pragma: no cover - defensive cleanup
+                logger.exception("Error closing project before opening new project")
+
+        self.project_path = project_path
+        self.project_name = project_name
+
+        if hasattr(self, "programs"):
+            self.programs.clear()
+        else:
+            self.programs = {}
+
+        self.active_program_name = None
+
+        project = self._get_or_create_project()
+        self.project = project
+
+        project_dir = self.project_path / self.project_name
+        chromadb_path = project_dir / "chromadb"
+        self.chroma_client = chromadb.PersistentClient(
+            path=str(chromadb_path), settings=Settings(anonymized_telemetry=False)
+        )
+
+        uses_default_gzfs = getattr(self, "_uses_default_gzfs_path", True)
+        current_gzfs_path = getattr(self, "gzfs_path", None)
+        if uses_default_gzfs or current_gzfs_path is None:
+            self.gzfs_path = self.project_path / "gzfs"
+
+        if self.gzfs_path is not None:
+            self.gzfs_path.mkdir(exist_ok=True, parents=True)
+
+        return project
+
+    def _require_project(self) -> "GhidraProject":
+        project = self.project
+        if project is None:
+            raise RuntimeError("Project is not open. Call open_project() first.")
+        return project
 
     def _get_or_create_project(self) -> "GhidraProject":
         """
@@ -180,7 +240,8 @@ class PyGhidraContext:
 
     def list_binaries(self) -> list[str]:
         """List all the binaries within the Ghidra project."""
-        return [f.getName() for f in self.project.getRootFolder().getFiles()]
+        project = self._require_project()
+        return [f.getName() for f in project.getRootFolder().getFiles()]
 
     def set_active_program(self, name: str) -> "ProgramInfo":
         """Set the active program for subsequent tool invocations."""
@@ -216,18 +277,19 @@ class PyGhidraContext:
         binary_path = Path(binary_path)
         program_name = PyGhidraContext._gen_unique_bin_name(binary_path)
 
-        root_folder = self.project.getRootFolder()
+        project = self._require_project()
+        root_folder = project.getRootFolder()
         program: Program
 
         if root_folder.getFile(program_name):
             logger.info(f"Opening existing program: {program_name}")
-            program = self.project.openProgram("/", program_name, False)
+            program = project.openProgram("/", program_name, False)
         else:
             logger.info(f"Importing new program: {program_name}")
-            program = self.project.importProgram(binary_path)
+            program = project.importProgram(binary_path)
             program.name = program_name
             if program:
-                self.project.saveAs(program, "/", program_name, True)
+                project.saveAs(program, "/", program_name, True)
 
         if not program:
             raise ImportError(f"Failed to import binary: {binary_path}")
@@ -446,13 +508,14 @@ class PyGhidraContext:
         """
         Analyzes all files found within the Ghidra project
         """
+        project = self._require_project()
         logger.info(
-            f"Starting analysis for {len(self.project.getRootFolder().getFiles())} binaries"
+            f"Starting analysis for {len(project.getRootFolder().getFiles())} binaries"
         )
 
         domain_files = [
             domainFile
-            for domainFile in self.project.getRootFolder().getFiles()
+            for domainFile in project.getRootFolder().getFiles()
             if domainFile.getContentType() == "Program"
         ]
 
@@ -502,12 +565,14 @@ class PyGhidraContext:
         from ghidra.program.util import GhidraProgramUtilities
         from ghidra.util.task import ConsoleTaskMonitor
 
+        project = self._require_project()
+
         if self.programs.get(df_or_prog.name):
             # program already opened and initialized
             program = self.programs[df_or_prog.name].program
         else:
             # open program from Ghidra Project
-            program = self.project.openProgram("/", df_or_prog.getName(), False)
+            program = project.openProgram("/", df_or_prog.getName(), False)
             self.programs[df_or_prog.name] = self._init_program_info(program)
 
         assert isinstance(program, Program)
@@ -574,7 +639,7 @@ class PyGhidraContext:
                         raise Exception("Missing set analyzed flag method!")
                 finally:
                     GhidraScriptUtil.releaseBundleHostReference()
-                    self.project.save(program)
+                    project.save(program)
             else:
                 logger.info(f"Analysis already complete.. skipping {program}!")
         finally:
@@ -582,7 +647,7 @@ class PyGhidraContext:
                 from java.io import File  # type: ignore
 
                 gzf_file = self.gzfs_path / f"{program.getDomainFile().getName()}.gzf"
-                self.project.saveAsPackedFile(program, File(str(gzf_file.absolute())), True)
+                project.saveAsPackedFile(program, File(str(gzf_file.absolute())), True)
 
         logger.info(f"Analysis for {df_or_prog.getName()} complete")
         self.programs[df_or_prog.name].ghidra_analysis_complete = True

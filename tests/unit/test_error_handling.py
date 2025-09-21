@@ -49,6 +49,36 @@ def _ensure_stub_modules() -> None:
         chromadb_module.config = chromadb_config_module
         sys.modules["chromadb"] = chromadb_module
 
+    starlette_module = sys.modules.get("starlette")
+    if starlette_module is None:
+        starlette_module = types.ModuleType("starlette")
+        starlette_module.__path__ = []
+        sys.modules["starlette"] = starlette_module
+
+    responses_module = sys.modules.get("starlette.responses")
+    if responses_module is None:
+        responses_module = types.ModuleType("starlette.responses")
+
+        class JSONResponse:  # pragma: no cover - stub implementation
+            def __init__(
+                self,
+                content,
+                status_code: int = 200,
+                headers=None,
+                media_type: str | None = None,
+                background=None,
+            ) -> None:
+                self.content = content
+                self.status_code = status_code
+                self.headers = headers
+                self.media_type = media_type
+                self.background = background
+
+        responses_module.JSONResponse = JSONResponse
+        sys.modules["starlette.responses"] = responses_module
+
+    starlette_module.responses = responses_module
+
     if "mcp" not in sys.modules:
         mcp_module = types.ModuleType("mcp")
         mcp_module.__path__ = []
