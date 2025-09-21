@@ -186,6 +186,16 @@ The `Makefile` provides several targets for testing and code quality:
 - `make check`: Run all quality checks.
 - `make dev`: Run the development workflow (format and check).
 
+### Project locking semantics
+
+`PyGhidraContext` coordinates all imports and program opens through an internal
+`_project_lock` helper that mirrors Ghidra's project/domain write locks. When
+adding new features that mutate the project (e.g., calling `importProgram`,
+`saveAs`, or `openProgram`), wrap the interaction with `with
+context._project_lock(...)` so concurrent tooling stays serialized. Unit tests
+exercise concurrent imports to ensure lock acquisition/release stays balanced
+and surfaces regressions quickly.
+
 ## API
 
 ### Tools

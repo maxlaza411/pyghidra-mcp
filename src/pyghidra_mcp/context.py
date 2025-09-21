@@ -4,6 +4,8 @@ import logging
 import multiprocessing
 import threading
 import time
+from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
@@ -119,6 +121,7 @@ class PyGhidraContext:
         self.project_path = Path(project_path)
         self.project: GhidraProject = self._get_or_create_project()
         self.programs: dict[str, ProgramInfo] = {}
+        self._project_lock_guard = threading.RLock()
 
         project_dir = self.project_path / self.project_name
         chromadb_path = project_dir / "chromadb"
@@ -177,6 +180,173 @@ class PyGhidraContext:
             logger.info(f"Creating new project: {self.project_name}")
             return GhidraProject.createProject(project_dir_str, self.project_name, False)
 
+    @contextmanager
+    def _project_lock(
+        self,
+        *,
+        write: bool = True,
+        domain_file: "DomainFile | None" = None,
+    ):
+        """Coordinate access to project/domain write locks when mutating state."""
+
+        with self._project_lock_guard:
+            project_release = self._acquire_project_lock(write=write)
+            domain_release: tuple[Callable[[], None] | None, str | None]
+            domain_release = (None, None)
+
+            try:
+                if write and domain_file is not None:
+                    domain_release = self._acquire_domain_lock(domain_file)
+                yield
+            finally:
+                release_callable, description = domain_release
+                if release_callable is not None:
+                    self._safe_release(release_callable, description or "domain lock")
+
+                release_callable, description = project_release
+                if release_callable is not None:
+                    self._safe_release(
+                        release_callable, description or "project lock"
+                    )
+
+    def _acquire_project_lock(
+        self,
+        *,
+        write: bool,
+    ) -> tuple[Callable[[], None] | None, str | None]:
+        project_data_getter = getattr(self.project, "getProjectData", None)
+        if not callable(project_data_getter):
+            return None, None
+
+        project_data = project_data_getter()
+        if project_data is None:
+            return None, None
+
+        if write:
+            candidates = [
+                ("acquireWriteLock", "releaseWriteLock"),
+                ("acquireLock", "releaseLock"),
+                ("acquireProjectLock", "releaseProjectLock"),
+                ("lockProject", "unlockProject"),
+                ("lock", "unlock"),
+            ]
+        else:
+            candidates = [
+                ("acquireReadLock", "releaseReadLock"),
+                ("acquireLock", "releaseLock"),
+                ("lockProject", "unlockProject"),
+                ("lock", "unlock"),
+            ]
+
+        for acquire_name, release_name in candidates:
+            acquire = getattr(project_data, acquire_name, None)
+            if not callable(acquire):
+                continue
+
+            handle = self._call_with_optional_bool(acquire, write)
+            release_callable, description = self._resolve_release(
+                project_data, release_name, handle
+            )
+            if release_callable is None:
+                release_callable, description = self._resolve_release(handle, "release", None)
+            if release_callable is None:
+                release_callable, description = self._resolve_release(handle, "close", None)
+            if release_callable is None:
+                release_callable, description = self._resolve_release(handle, "unlock", None)
+
+            if release_callable is not None:
+                logger.debug("Acquired project lock via %s", acquire_name)
+                return release_callable, description or f"{acquire_name} release"
+
+        logger.debug("Project locking API unavailable; relying on Python lock only")
+        return None, None
+
+    def _acquire_domain_lock(
+        self,
+        domain_file: "DomainFile",
+    ) -> tuple[Callable[[], None] | None, str | None]:
+        candidates = [
+            ("acquireWriteLock", "releaseWriteLock"),
+            ("acquireLock", "releaseLock"),
+            ("lock", "unlock"),
+        ]
+
+        for acquire_name, release_name in candidates:
+            acquire = getattr(domain_file, acquire_name, None)
+            if not callable(acquire):
+                continue
+
+            handle = self._call_with_optional_bool(acquire, True)
+            release_callable, description = self._resolve_release(
+                domain_file, release_name, handle
+            )
+            if release_callable is None:
+                release_callable, description = self._resolve_release(handle, "release", None)
+            if release_callable is None:
+                release_callable, description = self._resolve_release(handle, "close", None)
+            if release_callable is None:
+                release_callable, description = self._resolve_release(handle, "unlock", None)
+
+            if release_callable is not None:
+                logger.debug("Acquired domain file lock via %s", acquire_name)
+                return release_callable, description
+
+        logger.debug("Domain file locking API unavailable; continuing without lock")
+        return None, None
+
+    def _call_with_optional_bool(
+        self,
+        func: Callable[..., Any],
+        flag: bool,
+    ) -> Any:
+        attempts = ((), (flag,), (bool(flag),))
+        for args in attempts:
+            try:
+                return func(*args)
+            except TypeError:
+                continue
+        try:
+            return func()
+        except Exception:
+            func_name = getattr(func, "__name__", func)
+            logger.debug("Failed to invoke %s for lock acquisition", func_name)
+            return None
+
+    def _resolve_release(
+        self,
+        target: Any,
+        method_name: str | None,
+        handle: Any,
+    ) -> tuple[Callable[[], None] | None, str | None]:
+        if target is None or method_name is None:
+            return None, None
+
+        method = getattr(target, method_name, None)
+        if not callable(method):
+            return None, None
+
+        def _release() -> None:
+            try:
+                if handle is None:
+                    method()
+                else:
+                    method(handle)
+            except TypeError:
+                method()
+
+        description = f"{type(target).__name__}.{method_name}"
+        return _release, description
+
+    def _safe_release(
+        self,
+        release_callable: Callable[[], None],
+        description: str,
+    ) -> None:
+        try:
+            release_callable()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to release %s", description)
+
     def list_binaries(self) -> list[str]:
         """List all the binaries within the Ghidra project."""
         return [f.getName() for f in self.project.getRootFolder().getFiles()]
@@ -200,15 +370,20 @@ class PyGhidraContext:
         root_folder = self.project.getRootFolder()
         program: Program
 
-        if root_folder.getFile(program_name):
+        existing_file = root_folder.getFile(program_name)
+        if existing_file:
             logger.info(f"Opening existing program: {program_name}")
-            program = self.project.openProgram("/", program_name, False)
+            with self._project_lock(write=True, domain_file=existing_file):
+                program = self.project.openProgram("/", program_name, False)
         else:
             logger.info(f"Importing new program: {program_name}")
-            program = self.project.importProgram(binary_path)
-            program.name = program_name
+            with self._project_lock(write=True):
+                program = self.project.importProgram(binary_path)
+                program.name = program_name
             if program:
-                self.project.saveAs(program, "/", program_name, True)
+                domain_file = getattr(program, "getDomainFile", lambda: None)()
+                with self._project_lock(write=True, domain_file=domain_file):
+                    self.project.saveAs(program, "/", program_name, True)
 
         if not program:
             raise ImportError(f"Failed to import binary: {binary_path}")
@@ -488,7 +663,9 @@ class PyGhidraContext:
             program = self.programs[df_or_prog.name].program
         else:
             # open program from Ghidra Project
-            program = self.project.openProgram("/", df_or_prog.getName(), False)
+            domain_for_lock = df_or_prog if hasattr(df_or_prog, "getName") else None
+            with self._project_lock(write=True, domain_file=domain_for_lock):
+                program = self.project.openProgram("/", df_or_prog.getName(), False)
             self.programs[df_or_prog.name] = self._init_program_info(program)
 
         assert isinstance(program, Program)
