@@ -279,6 +279,36 @@ class PyGhidraContext:
             )
         return program_info
 
+    def analyze_now(self, binary_name: str, *, force: bool = False) -> "ProgramInfo":
+        """Synchronously analyze a binary and rebuild its search indexes."""
+
+        program_info = self.programs.get(binary_name)
+        if program_info is None:
+            domain_file = self.project.getRootFolder().getFile(binary_name)
+            if domain_file is None:
+                available_progs = sorted(
+                    set(self.programs.keys()) | set(self.list_binaries())
+                )
+                raise ValueError(
+                    f"Binary {binary_name} not found. Available binaries: {available_progs}"
+                )
+
+            program = self.project.openProgram("/", binary_name, False)
+            program_info = self._init_program_info(program)
+            self.programs[binary_name] = program_info
+
+        logger.info(
+            "Running immediate analysis for %s (force=%s)",
+            binary_name,
+            force,
+        )
+
+        self.analyze_program(program_info.program, force_analysis=force)
+        self._reset_chroma_collections_for_program(program_info)
+        self._init_chroma_collections_for_program(program_info)
+
+        return program_info
+
     def _init_program_info(self, program):
         from ghidra.program.flatapi import FlatProgramAPI
 
@@ -408,6 +438,23 @@ class PyGhidraContext:
         """
         self._init_chroma_code_collection_for_program(program_info)
         self._init_chroma_strings_collection_for_program(program_info)
+
+    def _reset_chroma_collections_for_program(self, program_info: ProgramInfo) -> None:
+        """Remove existing Chroma collections so they can be rebuilt fresh."""
+
+        collection_names = [program_info.name, f"{program_info.name}_strings"]
+
+        for collection_name in collection_names:
+            try:
+                self.chroma_client.delete_collection(name=collection_name)
+                logger.info("Deleted Chroma collection '%s'", collection_name)
+            except Exception:
+                logger.debug(
+                    "Chroma collection '%s' could not be deleted or did not exist", collection_name
+                )
+
+        program_info.collection = None
+        program_info.strings_collection = None
 
     def _init_all_chroma_collections(self):
         """

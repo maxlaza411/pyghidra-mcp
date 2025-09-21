@@ -1,7 +1,6 @@
 from typing import Any
 
 from mcp.types import ResourceContents
-
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -22,9 +21,17 @@ class FunctionResourceMetadata(BaseModel):
         ..., description="The kind of artifact (e.g. decompilation, disassembly, pcode)."
     )
     summary: str = Field(..., description="A short human readable summary of the artifact.")
-    resource_uri: str = Field(..., description="URI that can be used with the MCP resources API to fetch the artifact payload.")
+    resource_uri: str = Field(
+        ...,
+        description=(
+            "URI that can be used with the MCP resources API to fetch the artifact payload."
+        ),
+    )
     mime_type: str = Field(..., description="MIME type describing the artifact payload.")
-    signature: str | None = Field(None, description="Optional function signature information if available.")
+    signature: str | None = Field(
+        None,
+        description="Optional function signature information if available.",
+    )
     details: dict[str, Any] | None = Field(
         None, description="Additional structured metadata about the artifact."
     )
@@ -84,6 +91,27 @@ class ProgramInfos(BaseModel):
     """A container for a list of program information objects."""
 
     programs: list[ProgramInfo] = Field(..., description="A list of program information objects.")
+
+
+class AnalyzeNowResult(BaseModel):
+    """Status information returned by the analyze_now MCP tool."""
+
+    binary_name: str = Field(..., description="The name of the program that was analyzed.")
+    ghidra_analysis_complete: bool = Field(
+        ..., description="Indicates whether Ghidra has finished its analysis stage."
+    )
+    code_collection_ready: bool = Field(
+        ..., description="True if the code search collection has been rebuilt."
+    )
+    strings_collection_ready: bool = Field(
+        ..., description="True if the strings search collection has been rebuilt."
+    )
+    analysis_complete: bool = Field(
+        ..., description="Convenience flag signalling both Ghidra and Chroma are ready."
+    )
+    next_steps: str = Field(
+        ..., description="Guidance for the caller on what to do after invoking the tool."
+    )
 
 
 class ExportInfo(BaseModel):
