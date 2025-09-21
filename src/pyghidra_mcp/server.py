@@ -13,6 +13,7 @@ from mcp.server import Server
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.exceptions import McpError
 from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, ErrorData
+from starlette.responses import JSONResponse
 
 from pyghidra_mcp.__init__ import __version__
 from pyghidra_mcp.context import AnalysisIncompleteError, PyGhidraContext
@@ -397,16 +398,23 @@ def init_pyghidra_context(
 
     # init PyGhidraContext / import + analyze binaries
     logger.info("Server initializing...")
-    pyghidra_context = PyGhidraContext(project_name, project_directory)
-    logger.info(f"Importing binaries: {project_directory}")
-    pyghidra_context.import_binaries(bin_paths)
-    logger.info(f"Analyzing project: {pyghidra_context.project}")
-    pyghidra_context.analyze_project()
+    try:
+        pyghidra_context = PyGhidraContext(project_name, project_directory)
+        logger.info(f"Importing binaries: {project_directory}")
+        pyghidra_context.import_binaries(bin_paths)
+        logger.info(f"Analyzing project: {pyghidra_context.project}")
+        pyghidra_context.analyze_project()
 
-    if len(pyghidra_context.list_binaries()) == 0 and len(input_paths) == 0:
-        logger.warning("No binaries were imported and none exist in the project.")
+        if len(pyghidra_context.list_binaries()) == 0 and len(input_paths) == 0:
+            logger.warning("No binaries were imported and none exist in the project.")
 
-    mcp._pyghidra_context = pyghidra_context  # type: ignore
+        mcp._pyghidra_context = pyghidra_context  # type: ignore[attr-defined]
+        mcp._pyghidra_context_error = None  # type: ignore[attr-defined]
+    except Exception as exc:  # pragma: no cover - defensive programming
+        logger.exception("Failed to initialize PyGhidra context: %s", exc)
+        mcp._pyghidra_context = None  # type: ignore[attr-defined]
+        mcp._pyghidra_context_error = {"message": str(exc)}  # type: ignore[attr-defined]
+        raise
     logger.info("Server intialized")
 
     return mcp
@@ -452,6 +460,47 @@ def main(transport: str, input_paths: list[Path], project_path: Path) -> None:
 
     init_pyghidra_context(mcp, input_paths, project_name, project_directory)
 
+    @mcp.custom_route("/health", ["GET"])
+    async def health(_request) -> JSONResponse:
+        """Report readiness information for HTTP-based transports."""
+
+        error_info = getattr(mcp, "_pyghidra_context_error", None)
+        pyghidra_context = getattr(mcp, "_pyghidra_context", None)
+
+        if error_info is not None:
+            detail = (
+                error_info.get("message", "PyGhidra context initialization failed.")
+                if isinstance(error_info, dict)
+                else str(error_info)
+            )
+            payload = {"status": "error", "detail": detail}
+            if isinstance(error_info, dict):
+                payload.update(error_info)
+            return JSONResponse(payload, status_code=503)
+
+        if pyghidra_context is None:
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "detail": "PyGhidra context is not available.",
+                },
+                status_code=503,
+            )
+
+        program_count = len(pyghidra_context.programs)
+        analyzed_programs = sum(
+            1 for program in pyghidra_context.programs.values() if program.analysis_complete
+        )
+
+        payload = {
+            "status": "ready",
+            "project_name": pyghidra_context.project_name,
+            "project_path": str(pyghidra_context.project_path),
+            "program_count": program_count,
+            "analyzed_programs": analyzed_programs,
+        }
+        return JSONResponse(payload, status_code=200)
+
     try:
         if transport == "stdio":
             mcp.run(transport="stdio")
@@ -462,7 +511,9 @@ def main(transport: str, input_paths: list[Path], project_path: Path) -> None:
         else:
             raise ValueError(f"Invalid transport: {transport}")
     finally:
-        mcp._pyghidra_context.close()  # type: ignore
+        pyghidra_context = getattr(mcp, "_pyghidra_context", None)
+        if pyghidra_context is not None:
+            pyghidra_context.close()
 
 
 if __name__ == "__main__":

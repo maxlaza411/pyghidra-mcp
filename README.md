@@ -330,6 +330,8 @@ Streamable HTTP enables streaming responses over JSON RPC via HTTP POST requests
 
 By default, the server listens on [127.0.0.1:8000/mcp](https://127.0.0.1/mcp) for client connections. To change any of this, set [FASTMCP_*](https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/server/fastmcp/server.py#L78) environment variables. _The server must be running for clients to connect to it._
 
+Use `GET http://127.0.0.1:8000/health` to retrieve a JSON readiness report (project name, loaded binaries, and analysis status). The endpoint returns `200` when the project is ready and `503` if initialization fails.
+
 #### Python
 
 ```bash
@@ -352,6 +354,8 @@ docker run -p 8000:8000 ghcr.io/clearbluejar/pyghidra-mcp
 SSE transport enables server-to-client streaming with Server-Send Events for client-to-server and server-to-client communication. See the [spec](https://modelcontextprotocol.io/docs/concepts/transports#server-sent-events-sse) for more details.
 
 By default, the server listens on [127.0.0.1:8000/sse](https://127.0.0.1/sse) for client connections. To change any of this, set [FASTMCP_*](https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/server/fastmcp/server.py#L78) environment variables. _The server must be running for clients to connect to it._
+
+The same `/health` endpoint is available over HTTP when running SSE mode for integration-friendly readiness checks.
 
 #### Python
 
