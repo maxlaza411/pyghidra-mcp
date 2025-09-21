@@ -216,10 +216,22 @@ class PyGhidraContext:
         Args:
             binary_path: The path of the binary to import.
         """
-        if not Path(binary_path).exists():
+        binary_path = Path(binary_path)
+
+        if not binary_path.exists():
             raise FileNotFoundError(f"The file {binary_path} cannot be found")
 
-        threading.Thread(target=self.import_binary, args=(binary_path, True)).start()
+        def _import_with_logging() -> None:
+            logger.info("Background import started for %s", binary_path)
+            try:
+                self.import_binary(binary_path, True)
+            except Exception:
+                logger.exception("Background import failed for %s", binary_path)
+                raise
+            else:
+                logger.info("Background import finished for %s", binary_path)
+
+        threading.Thread(target=_import_with_logging, daemon=True).start()
 
     def get_program_info(self, binary_name: str) -> "ProgramInfo":
         """Get program info or raise ValueError if not found."""
