@@ -1,6 +1,5 @@
 import concurrent.futures
 import hashlib
-import json
 import logging
 import multiprocessing
 import threading
@@ -49,6 +48,63 @@ class ProgramInfo:
             and self.collection is not None
             and self.strings_collection is not None
         )
+
+
+class AnalysisIncompleteError(RuntimeError):
+    """Raised when a tool is invoked before binary analysis has completed."""
+
+    def __init__(
+        self,
+        *,
+        binary_name: str,
+        ghidra_analysis_complete: bool,
+        code_collection_ready: bool,
+        strings_collection_ready: bool,
+        suggestion: str = "Wait and try tool call again.",
+    ) -> None:
+        self.binary_name = binary_name
+        self.ghidra_analysis_complete = ghidra_analysis_complete
+        self.code_collection_ready = code_collection_ready
+        self.strings_collection_ready = strings_collection_ready
+        self.suggestion = suggestion
+
+        message = self._build_message()
+        super().__init__(message)
+
+    def _build_message(self) -> str:
+        pending = self.pending_components
+        pending_message = (
+            f" Pending components: {', '.join(pending)}." if pending else ""
+        )
+        return (
+            f"Analysis incomplete for binary '{self.binary_name}'."
+            f"{pending_message} {self.suggestion}"
+        ).strip()
+
+    @property
+    def pending_components(self) -> list[str]:
+        """Return a list describing which analysis steps are unfinished."""
+
+        components: list[str] = []
+        if not self.ghidra_analysis_complete:
+            components.append("Ghidra analysis")
+        if not self.code_collection_ready:
+            components.append("code semantic index")
+        if not self.strings_collection_ready:
+            components.append("string semantic index")
+        return components
+
+    def to_dict(self) -> dict[str, Any]:
+        """Structured details describing the incomplete analysis state."""
+
+        return {
+            "binary_name": self.binary_name,
+            "ghidra_analysis_complete": self.ghidra_analysis_complete,
+            "code_collection_ready": self.code_collection_ready,
+            "strings_collection_ready": self.strings_collection_ready,
+            "pending_components": self.pending_components,
+            "suggestion": self.suggestion,
+        }
 
 
 class PyGhidraContext:
@@ -230,17 +286,11 @@ class PyGhidraContext:
                 f"Binary {binary_name} not found. Available binaries: {available_progs}"
             )
         if not program_info.analysis_complete:
-            raise RuntimeError(
-                json.dumps(
-                    {
-                        "message": f"Analysis incomplete for binary '{binary_name}'.",
-                        "binary_name": binary_name,
-                        "ghidra_analysis_complete": program_info.ghidra_analysis_complete,
-                        "code_collection": program_info.collection,
-                        "strings_collection": program_info.strings_collection,
-                        "suggestion": "Wait and try tool call again.",
-                    }
-                )
+            raise AnalysisIncompleteError(
+                binary_name=binary_name,
+                ghidra_analysis_complete=program_info.ghidra_analysis_complete,
+                code_collection_ready=program_info.collection is not None,
+                strings_collection_ready=program_info.strings_collection is not None,
             )
         return program_info
 

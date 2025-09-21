@@ -14,7 +14,7 @@ from mcp.shared.exceptions import McpError
 from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, ErrorData
 
 from pyghidra_mcp.__init__ import __version__
-from pyghidra_mcp.context import PyGhidraContext
+from pyghidra_mcp.context import AnalysisIncompleteError, PyGhidraContext
 from pyghidra_mcp.models import (
     CodeSearchResults,
     CrossReferenceInfos,
@@ -54,6 +54,39 @@ async def server_lifespan(server: Server) -> AsyncIterator[PyGhidraContext]:
 mcp = FastMCP("pyghidra-mcp", lifespan=server_lifespan)  # type: ignore
 
 
+# Shared error handling
+# ---------------------------------------------------------------------------------
+def _handle_tool_exception(action: str, error: Exception) -> None:
+    """Translate internal exceptions into MCP errors with clear messaging."""
+
+    if isinstance(error, ValueError):
+        raise McpError(ErrorData(code=INVALID_PARAMS, message=str(error))) from error
+
+    if isinstance(error, AnalysisIncompleteError):
+        pending = error.pending_components
+        pending_message = (
+            f" Pending components: {', '.join(pending)}." if pending else ""
+        )
+        message = (
+            f"Cannot {action} because analysis is incomplete for binary "
+            f"'{error.binary_name}'.{pending_message} {error.suggestion}"
+        ).strip()
+        raise McpError(
+            ErrorData(
+                code=INVALID_PARAMS,
+                message=message,
+                data=error.to_dict(),
+            )
+        ) from error
+
+    raise McpError(
+        ErrorData(
+            code=INTERNAL_ERROR,
+            message=f"Error while trying to {action}: {error!s}",
+        )
+    ) from error
+
+
 # MCP Tools
 # ---------------------------------------------------------------------------------
 @mcp.tool()
@@ -70,11 +103,7 @@ async def decompile_function(binary_name: str, name: str, ctx: Context) -> Decom
         tools = GhidraTools(program_info)
         return tools.decompile_function(name)
     except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error decompiling function: {e!s}")
-        ) from e
+        _handle_tool_exception("decompile the function", e)
 
 
 @mcp.tool()
@@ -96,11 +125,7 @@ def search_functions_by_name(
         functions = tools.search_functions_by_name(query, offset, limit)
         return FunctionSearchResults(functions=functions)
     except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error searching for functions: {e!s}")
-        ) from e
+        _handle_tool_exception("search for functions", e)
 
 
 @mcp.tool()
@@ -127,11 +152,7 @@ def search_symbols_by_name(
         symbols = tools.search_symbols_by_name(query, offset, limit)
         return SymbolSearchResults(symbols=symbols)
     except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error searching for symbols: {e!s}")
-        ) from e
+        _handle_tool_exception("search for symbols", e)
 
 
 @mcp.tool()
@@ -160,11 +181,7 @@ def search_code(binary_name: str, query: str, ctx: Context, limit: int = 5) -> C
         results = tools.search_code(query, limit)
         return CodeSearchResults(results=results)
     except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error searching for code: {e!s}")
-        ) from e
+        _handle_tool_exception("search the code index", e)
 
 
 @mcp.tool()
@@ -256,11 +273,7 @@ def list_exports(
         exports = tools.list_exports(query=query, offset=offset, limit=limit)
         return ExportInfos(exports=exports)
     except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error listing exports: {e!s}")
-        ) from e
+        _handle_tool_exception("list exports", e)
 
 
 @mcp.tool()
@@ -295,11 +308,7 @@ def list_imports(
         imports = tools.list_imports(query=query, offset=offset, limit=limit)
         return ImportInfos(imports=imports)
     except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error listing imports: {e!s}")
-        ) from e
+        _handle_tool_exception("list imports", e)
 
 
 @mcp.tool()
@@ -323,11 +332,7 @@ def list_cross_references(
         cross_references = tools.list_cross_references(name_or_address)
         return CrossReferenceInfos(cross_references=cross_references)
     except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error listing cross-references: {e!s}")
-        ) from e
+        _handle_tool_exception("list cross-references", e)
 
 
 @mcp.tool()
@@ -352,11 +357,7 @@ def search_strings(
         strings = tools.search_strings(query=query, limit=limit)
         return StringSearchResults(strings=strings)
     except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error searching for strings: {e!s}")
-        ) from e
+        _handle_tool_exception("search for strings", e)
 
 
 @mcp.tool()
