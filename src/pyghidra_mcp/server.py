@@ -5,6 +5,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Callable, TypeVar
 
 import click
 import pyghidra
@@ -38,6 +39,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 
 # Init Pyghidra
 # ---------------------------------------------------------------------------------
@@ -54,6 +57,31 @@ async def server_lifespan(server: Server) -> AsyncIterator[PyGhidraContext]:
 mcp = FastMCP("pyghidra-mcp", lifespan=server_lifespan)  # type: ignore
 
 
+# Helpers
+# ---------------------------------------------------------------------------------
+def _run_tool(
+    ctx: Context,
+    func: Callable[..., _T],
+    *,
+    binary_name: str | None = None,
+    error_message: str,
+) -> _T:
+    """Execute a tool callable with shared error handling."""
+    try:
+        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
+        if binary_name is not None:
+            program_info = pyghidra_context.get_program_info(binary_name)
+            tools = GhidraTools(program_info)
+            return func(pyghidra_context, tools)
+        return func(pyghidra_context)
+    except ValueError as e:
+        raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
+    except McpError:
+        raise
+    except Exception as e:  # pragma: no cover - defensive programming
+        raise McpError(ErrorData(code=INTERNAL_ERROR, message=f"{error_message}: {e!s}")) from e
+
+
 # MCP Tools
 # ---------------------------------------------------------------------------------
 @mcp.tool()
@@ -64,17 +92,12 @@ async def decompile_function(binary_name: str, name: str, ctx: Context) -> Decom
         binary_name: The name of the binary containing the function.
         name: The name of the function to decompile.
     """
-    try:
-        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        program_info = pyghidra_context.get_program_info(binary_name)
-        tools = GhidraTools(program_info)
-        return tools.decompile_function(name)
-    except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error decompiling function: {e!s}")
-        ) from e
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: tools.decompile_function(name),
+        binary_name=binary_name,
+        error_message="Error decompiling function",
+    )
 
 
 @mcp.tool()
@@ -89,18 +112,14 @@ def search_functions_by_name(
         offset: The number of results to skip.
         limit: The maximum number of results to return.
     """
-    try:
-        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        program_info = pyghidra_context.get_program_info(binary_name)
-        tools = GhidraTools(program_info)
-        functions = tools.search_functions_by_name(query, offset, limit)
-        return FunctionSearchResults(functions=functions)
-    except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error searching for functions: {e!s}")
-        ) from e
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: FunctionSearchResults(
+            functions=tools.search_functions_by_name(query, offset, limit)
+        ),
+        binary_name=binary_name,
+        error_message="Error searching for functions",
+    )
 
 
 @mcp.tool()
@@ -120,18 +139,14 @@ def search_symbols_by_name(
         offset: The number of results to skip.
         limit: The maximum number of results to return.
     """
-    try:
-        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        program_info = pyghidra_context.get_program_info(binary_name)
-        tools = GhidraTools(program_info)
-        symbols = tools.search_symbols_by_name(query, offset, limit)
-        return SymbolSearchResults(symbols=symbols)
-    except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error searching for symbols: {e!s}")
-        ) from e
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: SymbolSearchResults(
+            symbols=tools.search_symbols_by_name(query, offset, limit)
+        ),
+        binary_name=binary_name,
+        error_message="Error searching for symbols",
+    )
 
 
 @mcp.tool()
@@ -153,34 +168,28 @@ def search_code(binary_name: str, query: str, ctx: Context, limit: int = 5) -> C
         query: Code snippet signature or description to match via semantic search.
         limit: Maximum number of top scoring results to return (default: 5).
     """
-    try:
-        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        program_info = pyghidra_context.get_program_info(binary_name)
-        tools = GhidraTools(program_info)
-        results = tools.search_code(query, limit)
-        return CodeSearchResults(results=results)
-    except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error searching for code: {e!s}")
-        ) from e
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: CodeSearchResults(results=tools.search_code(query, limit)),
+        binary_name=binary_name,
+        error_message="Error searching for code",
+    )
 
 
 @mcp.tool()
 def list_project_binaries(ctx: Context) -> ProgramBasicInfos:
     """Lists the names and analysis status of all binaries currently loaded in
     the Ghidra project."""
-    try:
-        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        results = []
-        for name, pi in pyghidra_context.programs.items():
-            results.append(ProgramBasicInfo(name=name, analysis_complete=pi.analysis_complete))
-        return ProgramBasicInfos(programs=results)
-    except Exception as e:
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error listing project binaries: {e!s}")
-        ) from e
+    return _run_tool(
+        ctx,
+        lambda pyghidra_context: ProgramBasicInfos(
+            programs=[
+                ProgramBasicInfo(name=name, analysis_complete=pi.analysis_complete)
+                for name, pi in pyghidra_context.programs.items()
+            ]
+        ),
+        error_message="Error listing project binaries",
+    )
 
 
 @mcp.tool()
@@ -200,11 +209,10 @@ def list_project_program_info(ctx: Context) -> ProgramInfos:
     progress, or drive follow up actions such as listing imports/exports or running
     code searches on specific programs.
     """
-    try:
-        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        program_infos = []
-        for _name, pi in pyghidra_context.programs.items():
-            program_infos.append(
+    return _run_tool(
+        ctx,
+        lambda pyghidra_context: ProgramInfos(
+            programs=[
                 ProgramInfo(
                     name=pi.name,
                     file_path=str(pi.file_path) if pi.file_path else None,
@@ -213,15 +221,11 @@ def list_project_program_info(ctx: Context) -> ProgramInfos:
                     metadata=pi.metadata,
                     collection=None,
                 )
-            )
-        return ProgramInfos(programs=program_infos)
-    except Exception as e:
-        raise McpError(
-            ErrorData(
-                code=INTERNAL_ERROR,
-                message=f"Error listing project program info: {e!s}",
-            )
-        ) from e
+                for _name, pi in pyghidra_context.programs.items()
+            ]
+        ),
+        error_message="Error listing project program info",
+    )
 
 
 @mcp.tool()
@@ -249,18 +253,14 @@ def list_exports(
         offset: Number of matching results to skip (for pagination).
         limit: Maximum number of results to return.
     """
-    try:
-        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        program_info = pyghidra_context.get_program_info(binary_name)
-        tools = GhidraTools(program_info)
-        exports = tools.list_exports(query=query, offset=offset, limit=limit)
-        return ExportInfos(exports=exports)
-    except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error listing exports: {e!s}")
-        ) from e
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: ExportInfos(
+            exports=tools.list_exports(query=query, offset=offset, limit=limit)
+        ),
+        binary_name=binary_name,
+        error_message="Error listing exports",
+    )
 
 
 @mcp.tool()
@@ -288,18 +288,14 @@ def list_imports(
         offset: Number of matching results to skip (for pagination).
         limit: Maximum number of results to return.
     """
-    try:
-        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        program_info = pyghidra_context.get_program_info(binary_name)
-        tools = GhidraTools(program_info)
-        imports = tools.list_imports(query=query, offset=offset, limit=limit)
-        return ImportInfos(imports=imports)
-    except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error listing imports: {e!s}")
-        ) from e
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: ImportInfos(
+            imports=tools.list_imports(query=query, offset=offset, limit=limit)
+        ),
+        binary_name=binary_name,
+        error_message="Error listing imports",
+    )
 
 
 @mcp.tool()
@@ -316,18 +312,14 @@ def list_cross_references(
         name_or_address: The name of the function, symbol, or a specific address (e.g., '0x1004010')
         to find cross-references to.
     """
-    try:
-        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        program_info = pyghidra_context.get_program_info(binary_name)
-        tools = GhidraTools(program_info)
-        cross_references = tools.list_cross_references(name_or_address)
-        return CrossReferenceInfos(cross_references=cross_references)
-    except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error listing cross-references: {e!s}")
-        ) from e
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: CrossReferenceInfos(
+            cross_references=tools.list_cross_references(name_or_address)
+        ),
+        binary_name=binary_name,
+        error_message="Error listing cross-references",
+    )
 
 
 @mcp.tool()
@@ -345,18 +337,14 @@ def search_strings(
         query: A query to filter strings by.
         limit: The maximum number of results to return.
     """
-    try:
-        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        program_info = pyghidra_context.get_program_info(binary_name)
-        tools = GhidraTools(program_info)
-        strings = tools.search_strings(query=query, limit=limit)
-        return StringSearchResults(strings=strings)
-    except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error searching for strings: {e!s}")
-        ) from e
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: StringSearchResults(
+            strings=tools.search_strings(query=query, limit=limit)
+        ),
+        binary_name=binary_name,
+        error_message="Error searching for strings",
+    )
 
 
 @mcp.tool()
@@ -366,21 +354,18 @@ def import_binary(binary_path: str, ctx: Context) -> str:
     Args:
         binary_path: The path to the binary file to import.
     """
-    try:
-        # We would like to do context progress updates, but until that is more
-        # widely supported by clients, we will resort to this
-        pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
+    def _import(pyghidra_context: PyGhidraContext) -> str:
         pyghidra_context.import_binary_backgrounded(binary_path)
         return (
             f"Importing {binary_path} in the background."
             "When ready, it will appear analyzed in binary list."
         )
-    except Exception as e:
-        if isinstance(e, ValueError):
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
-        raise McpError(
-            ErrorData(code=INTERNAL_ERROR, message=f"Error importing binary: {e!s}")
-        ) from e
+
+    return _run_tool(
+        ctx,
+        _import,
+        error_message="Error importing binary",
+    )
 
 
 def init_pyghidra_context(
