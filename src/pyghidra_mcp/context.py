@@ -21,9 +21,8 @@ if TYPE_CHECKING:
     from ghidra.program.flatapi import FlatProgramAPI
     from ghidra.program.model.listing import Program
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 
 @dataclass
