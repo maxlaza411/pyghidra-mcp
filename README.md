@@ -238,7 +238,11 @@ Reusable prompts to standardize common LLM interactions.
 
 Expose data and content to LLMs
 
-- `ghidra://program/{program_name}/function/{function_name}/decompiled`: Decompiled code of a specific function.
+- `ghidra://program/{program_name}/function/{function_name}/decompiled`: Decompiled pseudo-C for a specific function (`text/x-c`).
+- `ghidra://program/{program_name}/function/{function_name}/disassembly`: Linear disassembly listing for the function (`text/x-asm`).
+- `ghidra://program/{program_name}/function/{function_name}/pcode`: Ghidra Pcode operations emitted for the function (`text/x-pcode`).
+- `ghidra://program/{program_name}/function/{function_name}/callgraph`: JSON encoded caller/callee relationships for the function (`application/json`).
+- `ghidra://program/{program_name}/function/{function_name}/analysis`: Human readable analysis summary including metrics (`text/plain`).
 
 ## Usage
 

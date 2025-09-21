@@ -1,6 +1,8 @@
 from typing import Any
 
-from pydantic import BaseModel, Field
+from mcp.types import ResourceContents
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DecompiledFunction(BaseModel):
@@ -9,6 +11,28 @@ class DecompiledFunction(BaseModel):
     name: str = Field(..., description="The name of the function.")
     code: str = Field(..., description="The decompiled pseudo-C code of the function.")
     signature: str | None = Field(None, description="The signature of the function.")
+
+
+class FunctionResourceMetadata(BaseModel):
+    """Metadata describing a heavy-weight function artifact that is exposed as an MCP resource."""
+
+    binary_name: str = Field(..., description="The binary/program that owns the function.")
+    function_name: str = Field(..., description="The name of the function the artifact belongs to.")
+    artifact_type: str = Field(
+        ..., description="The kind of artifact (e.g. decompilation, disassembly, pcode)."
+    )
+    summary: str = Field(..., description="A short human readable summary of the artifact.")
+    resource_uri: str = Field(..., description="URI that can be used with the MCP resources API to fetch the artifact payload.")
+    mime_type: str = Field(..., description="MIME type describing the artifact payload.")
+    signature: str | None = Field(None, description="Optional function signature information if available.")
+    details: dict[str, Any] | None = Field(
+        None, description="Additional structured metadata about the artifact."
+    )
+    resources: list[ResourceContents] = Field(
+        ..., description="Resource descriptors associated with the artifact payload."
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class FunctionInfo(BaseModel):
