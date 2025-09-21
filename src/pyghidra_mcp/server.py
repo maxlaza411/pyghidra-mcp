@@ -15,7 +15,7 @@ from mcp.shared.exceptions import McpError
 from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, ErrorData
 
 from pyghidra_mcp.__init__ import __version__
-from pyghidra_mcp.context import PyGhidraContext
+from pyghidra_mcp.context import AnalysisIncompleteError, PyGhidraContext
 from pyghidra_mcp.models import (
     CodeSearchResults,
     CrossReferenceInfos,
@@ -74,6 +74,21 @@ def _run_tool(
             tools = GhidraTools(program_info)
             return func(pyghidra_context, tools)
         return func(pyghidra_context)
+    except AnalysisIncompleteError as e:
+        message = (
+            f"Analysis for '{e.binary_name}' is not complete. "
+            f"Ghidra analysis complete: {e.ghidra_analysis_complete}. "
+            f"Code indexed: {e.code_collection_ready}. "
+            f"Strings indexed: {e.strings_collection_ready}. "
+            f"{e.suggestion}"
+        )
+        raise McpError(
+            ErrorData(
+                code=INVALID_PARAMS,
+                message=message,
+                data=e.details,
+            )
+        ) from e
     except ValueError as e:
         raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e))) from e
     except McpError:
