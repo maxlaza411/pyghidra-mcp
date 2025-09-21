@@ -72,3 +72,17 @@ async def test_streamable_client_smoke(streamable_server):
             assert len(content.keys()) == len(DecompiledFunction.model_fields.keys())
             assert "main(void)" in content["code"]
             print(json.dumps(content, indent=2))
+
+
+@pytest.mark.asyncio
+async def test_streamable_health_endpoint(streamable_server):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{base_url}/health") as response:
+            assert response.status == 200
+            payload = await response.json()
+
+    assert payload["status"] == "ready"
+    assert payload["program_count"] >= 1
+    assert 0 <= payload["analyzed_programs"] <= payload["program_count"]
+    assert payload["project_name"]
+    assert payload["project_path"]
