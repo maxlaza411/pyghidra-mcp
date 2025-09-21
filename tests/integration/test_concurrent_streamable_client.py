@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import aiohttp
 import pytest
@@ -24,22 +25,45 @@ from pyghidra_mcp.models import (
 )
 
 base_url = os.getenv("MCP_BASE_URL", "http://127.0.0.1:8000")
+parsed_base = urlparse(base_url)
+HOST = parsed_base.hostname or "127.0.0.1"
+PORT = parsed_base.port or (443 if parsed_base.scheme == "https" else 80)
+ORIGIN = f"{parsed_base.scheme}://{HOST}:{PORT}"
+AUTH_TOKEN = "pyghidra-test-token"
+AUTH_HEADERS = {"Authorization": f"Bearer {AUTH_TOKEN}", "Origin": ORIGIN}
 
 
 @pytest.fixture(scope="module")
 def streamable_server(test_binary):
     """Fixture to start the pyghidra-mcp server in a separate process."""
     proc = subprocess.Popen(
-        ["python", "-m", "pyghidra_mcp", "--transport", "streamable-http", test_binary],
+        [
+            "python",
+            "-m",
+            "pyghidra_mcp",
+            "--transport",
+            "streamable-http",
+            "--http-host",
+            HOST,
+            "--http-port",
+            str(PORT),
+            "--auth-token",
+            AUTH_TOKEN,
+            "--allowed-origin",
+            ORIGIN,
+            test_binary,
+        ],
         env={**os.environ, "GHIDRA_INSTALL_DIR": "/ghidra"},
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
     )
 
     async def wait_for_server(timeout=120):
         async with aiohttp.ClientSession() as session:
             for _ in range(timeout):  # Poll for 20 seconds
                 try:
-                    async with session.get(f"{base_url}/mcp") as response:
-                        if response.status == 406:
+                    async with session.get(f"{base_url}/mcp", headers=AUTH_HEADERS) as response:
+                        if response.status in {401, 406}:
                             return
                 except aiohttp.ClientConnectorError:
                     pass
@@ -56,7 +80,11 @@ def streamable_server(test_binary):
 
 
 async def invoke_tool_concurrently(server_binary_path):
-    async with streamablehttp_client(f"{base_url}/mcp") as (read, write, _):
+    async with streamablehttp_client(f"{base_url}/mcp", headers=AUTH_HEADERS) as (
+        read,
+        write,
+        _,
+    ):
         async with ClientSession(read, write) as session:
             await session.initialize()
             binary_name = PyGhidraContext._gen_unique_bin_name(Path(server_binary_path))

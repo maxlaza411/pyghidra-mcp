@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from typing import Any
@@ -12,6 +13,9 @@ from click.testing import CliRunner
 
 def _ensure_stub_modules() -> None:
     """Create lightweight stand-ins for external dependencies."""
+
+    if "src" not in sys.path:
+        sys.path.insert(0, "src")
 
     if "pyghidra" not in sys.modules:
         sys.modules["pyghidra"] = types.ModuleType("pyghidra")
@@ -41,44 +45,138 @@ def _ensure_stub_modules() -> None:
         sys.modules["chromadb"] = chromadb_module
         sys.modules["chromadb.config"] = chromadb_config_module
 
-    if "mcp" not in sys.modules:
-        mcp_module = types.ModuleType("mcp")
-        mcp_module.__path__ = []  # mark as package
-        sys.modules["mcp"] = mcp_module
+    # Reset MCP-related modules to provide deterministic stubs.
+    for module_name in [
+        "mcp.server.fastmcp.server",
+        "mcp.server.fastmcp",
+        "mcp.server.auth.provider",
+        "mcp.server.auth",
+        "mcp.server",
+        "mcp.shared.exceptions",
+        "mcp.shared",
+        "mcp.types",
+        "mcp",
+    ]:
+        sys.modules.pop(module_name, None)
 
-    server_module = sys.modules.get("mcp.server")
-    if server_module is None:
-        server_module = types.ModuleType("mcp.server")
-        server_module.__path__ = []
+    mcp_module = types.ModuleType("mcp")
+    mcp_module.__path__ = []
+    sys.modules["mcp"] = mcp_module
 
-        class Server:  # pragma: no cover - server placeholder
-            pass
+    server_module = types.ModuleType("mcp.server")
+    server_module.__path__ = []
 
-        server_module.Server = Server
-        sys.modules["mcp.server"] = server_module
+    class Server:  # pragma: no cover - server placeholder
+        pass
 
-    fastmcp_module = sys.modules.get("mcp.server.fastmcp")
-    if fastmcp_module is None:
-        fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+    server_module.Server = Server
+    sys.modules["mcp.server"] = server_module
 
-        class Context:  # pragma: no cover - context stand-in
-            def __init__(self, request_context: Any | None = None) -> None:
-                self.request_context = request_context
+    fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+    fastmcp_module.__path__ = []
 
-        class FastMCP:  # pragma: no cover - decorator provider
-            def __init__(self, *args: Any, **kwargs: Any) -> None:
-                pass
+    class Context:  # pragma: no cover - context stand-in
+        def __init__(self, request_context: Any | None = None) -> None:
+            self.request_context = request_context
 
-            def tool(self, *args: Any, **kwargs: Any):
-                def decorator(func):
-                    return func
+    class _Settings:  # pragma: no cover - track configuration mutations
+        def __init__(self) -> None:
+            self.host = "127.0.0.1"
+            self.port = 8000
+            self.transport_security = None
+            self.auth = None
+            self.streamable_http_path = "/mcp"
+            self.mount_path = "/"
+            self.message_path = "/messages/"
+            self.sse_path = "/sse"
+            self.json_response = False
+            self.stateless_http = False
 
-                return decorator
+    class TransportSecuritySettings:  # pragma: no cover - lightweight container
+        def __init__(
+            self,
+            *,
+            enable_dns_rebinding_protection: bool = False,
+            allowed_hosts: list[str] | None = None,
+            allowed_origins: list[str] | None = None,
+        ) -> None:
+            self.enable_dns_rebinding_protection = enable_dns_rebinding_protection
+            self.allowed_hosts = list(allowed_hosts or [])
+            self.allowed_origins = list(allowed_origins or [])
 
-        fastmcp_module.Context = Context
-        fastmcp_module.FastMCP = FastMCP
-        sys.modules["mcp.server.fastmcp"] = fastmcp_module
-        server_module.fastmcp = fastmcp_module
+    class AuthSettings:  # pragma: no cover - minimal auth model
+        def __init__(
+            self,
+            issuer_url: str,
+            resource_server_url: str | None = None,
+            required_scopes: list[str] | None = None,
+            **_: Any,
+        ) -> None:
+            self.issuer_url = issuer_url
+            self.resource_server_url = resource_server_url
+            self.required_scopes = required_scopes
+
+    class FastMCP:  # pragma: no cover - decorator provider
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.settings = _Settings()
+            self._token_verifier = None
+            self._session_manager = None
+
+        def tool(self, *args: Any, **kwargs: Any):
+            def decorator(func):
+                return func
+
+            return decorator
+
+        def custom_route(self, *args: Any, **kwargs: Any):
+            def decorator(func):
+                return func
+
+            return decorator
+
+        def run(self, *, transport: str) -> None:  # pragma: no cover - patched in tests
+            raise NotImplementedError
+
+    server_submodule = types.ModuleType("mcp.server.fastmcp.server")
+    server_submodule.AuthSettings = AuthSettings
+    server_submodule.TransportSecuritySettings = TransportSecuritySettings
+    sys.modules["mcp.server.fastmcp.server"] = server_submodule
+
+    fastmcp_module.Context = Context
+    fastmcp_module.FastMCP = FastMCP
+    fastmcp_module.TransportSecuritySettings = TransportSecuritySettings
+    fastmcp_module.AuthSettings = AuthSettings
+    fastmcp_module.server = server_submodule
+    sys.modules["mcp.server.fastmcp"] = fastmcp_module
+    server_module.fastmcp = fastmcp_module
+
+    auth_module = types.ModuleType("mcp.server.auth")
+    auth_module.__path__ = []
+    sys.modules["mcp.server.auth"] = auth_module
+
+    provider_module = types.ModuleType("mcp.server.auth.provider")
+
+    class AccessToken:  # pragma: no cover - minimal token representation
+        def __init__(
+            self,
+            token: str,
+            client_id: str,
+            scopes: list[str] | None = None,
+            expires_at: int | None = None,
+        ) -> None:
+            self.token = token
+            self.client_id = client_id
+            self.scopes = scopes or []
+            self.expires_at = expires_at
+
+    class TokenVerifier:  # pragma: no cover - protocol mimic
+        async def verify_token(self, token: str) -> AccessToken | None:
+            raise NotImplementedError
+
+    provider_module.AccessToken = AccessToken
+    provider_module.TokenVerifier = TokenVerifier
+    sys.modules["mcp.server.auth.provider"] = provider_module
+    auth_module.provider = provider_module
 
     if "mcp.shared" not in sys.modules:
         shared_package = types.ModuleType("mcp.shared")
@@ -131,7 +229,7 @@ def _ensure_stub_modules() -> None:
 
 _ensure_stub_modules()
 
-from pyghidra_mcp import server  # noqa: E402
+import pyghidra_mcp.server as server  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -204,3 +302,48 @@ def test_main_rejects_invalid_transport() -> None:
         "Invalid value for '-t' / '--transport': 'invalid' is not one of 'stdio',"
         " 'streamable-http', 'sse'." in result.output
     )
+
+
+def test_main_configures_http_security(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTTP transports should configure binding, security allowlists, and authentication."""
+
+    runner = CliRunner()
+
+    monkeypatch.setattr(server.mcp, "run", lambda *, transport: None, raising=False)
+    monkeypatch.setattr(server, "init_pyghidra_context", lambda *args, **kwargs: None)
+
+    result = runner.invoke(
+        server.main,
+        [
+            "--transport",
+            "streamable-http",
+            "--http-host",
+            "127.0.0.1",
+            "--http-port",
+            "9001",
+            "--auth-token",
+            "secret-token",
+            "--allowed-origin",
+            "http://example.com",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert server.mcp.settings.host == "127.0.0.1"
+    assert server.mcp.settings.port == 9001
+
+    security = server.mcp.settings.transport_security
+    assert security is not None
+    assert security.enable_dns_rebinding_protection is True
+    assert "127.0.0.1:9001" in security.allowed_hosts
+    assert "http://example.com" in security.allowed_origins
+
+    verifier = server.mcp._token_verifier
+    assert verifier is not None
+    assert asyncio.run(verifier.verify_token("secret-token")) is not None
+    assert asyncio.run(verifier.verify_token("wrong")) is None
+
+    # Cleanup mutated global state for subsequent tests
+    server.mcp._token_verifier = None
+    server.mcp.settings.auth = None
+    server.mcp.settings.transport_security = None

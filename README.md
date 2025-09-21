@@ -346,6 +346,33 @@ By default, the Python package will run in `stdio` mode, so you will have to inc
 docker run -p 8000:8000 ghcr.io/clearbluejar/pyghidra-mcp
 ```
 
+#### HTTP security controls
+
+When exposing the Streamable HTTP or SSE transports, the server now provides built-in hardening options:
+
+- `--auth-token` / `PYGHIDRA_MCP_AUTH_TOKEN` – require clients to send an `Authorization: Bearer <token>` header. Requests without the token are rejected.
+- `--allowed-origin` / `PYGHIDRA_MCP_ALLOWED_ORIGINS` – supply one or more allowed `Origin` header values. Entries can be repeated or comma-separated in the environment variable. Local origins for `127.0.0.1` and `localhost` are added automatically.
+- `--http-host` / `PYGHIDRA_MCP_HOST` – choose the bind address for HTTP transports (defaults to `127.0.0.1`).
+- `--http-port` / `PYGHIDRA_MCP_PORT` – override the listening port (defaults to `8000`).
+
+Clients must include the same origin in requests whenever an `Origin` header is sent. For example:
+
+```bash
+uvx pyghidra-mcp \
+  --transport streamable-http \
+  --auth-token super-secret-token \
+  --allowed-origin "http://127.0.0.1:8000"
+```
+
+Then connect with headers similar to:
+
+```python
+headers = {
+    "Authorization": "Bearer super-secret-token",
+    "Origin": "http://127.0.0.1:8000",
+}
+```
+
 ### Server-sent events (SSE)
 
 > [!WARNING]

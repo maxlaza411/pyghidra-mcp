@@ -1,8 +1,10 @@
 # Server
 # ---------------------------------------------------------------------------------
 import logging
+import os
+import secrets
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -11,6 +13,8 @@ import click
 import pyghidra
 from mcp.server import Server
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.server import AuthSettings, TransportSecuritySettings
+from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.shared.exceptions import McpError
 from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, ErrorData
 from starlette.responses import JSONResponse
@@ -42,6 +46,10 @@ logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
+HTTP_TRANSPORTS = {"streamable-http", "sse"}
+ENV_ALLOWED_ORIGINS = "PYGHIDRA_MCP_ALLOWED_ORIGINS"
+DEFAULT_CLIENT_ID = "pyghidra-mcp"
+
 
 # Init Pyghidra
 # ---------------------------------------------------------------------------------
@@ -66,6 +74,125 @@ mcp = FastMCP("pyghidra-mcp", lifespan=server_lifespan)  # type: ignore
 
 # Helpers
 # ---------------------------------------------------------------------------------
+
+
+class StaticTokenVerifier(TokenVerifier):
+    """Simple TokenVerifier implementation that validates a single shared secret."""
+
+    def __init__(
+        self,
+        token: str,
+        *,
+        client_id: str = DEFAULT_CLIENT_ID,
+        scopes: Sequence[str] | None = None,
+    ) -> None:
+        if not token:
+            raise ValueError("Authentication token cannot be empty.")
+        self._token = token
+        self._client_id = client_id
+        self._scopes = list(scopes or [])
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        if not secrets.compare_digest(token, self._token):
+            return None
+        return AccessToken(token=self._token, client_id=self._client_id, scopes=self._scopes)
+
+
+def _deduplicate_preserve_order(values: Sequence[str]) -> list[str]:
+    """Return a new list with duplicate values removed while preserving order."""
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _split_values(values: Sequence[str]) -> list[str]:
+    """Split comma-separated values and trim whitespace."""
+
+    results: list[str] = []
+    for raw in values:
+        for item in raw.split(","):
+            cleaned = item.strip()
+            if cleaned:
+                results.append(cleaned)
+    return results
+
+
+def _collect_allowed_origins(host: str, port: int, cli_values: Sequence[str]) -> list[str]:
+    """Combine CLI and environment allowlist entries into a normalized list."""
+
+    origins = _split_values(cli_values)
+    env_value = os.getenv(ENV_ALLOWED_ORIGINS)
+    if env_value:
+        origins.extend(_split_values([env_value]))
+
+    if not origins:
+        # Default to local origins to support browser-based development tools.
+        base_origin = f"http://{host}:{port}"
+        localhost_origin = f"http://localhost:{port}"
+        origins.extend([base_origin, localhost_origin])
+
+        # Allow HTTPS variants for reverse proxies or TLS terminators.
+        origins.extend([base_origin.replace("http://", "https://"), localhost_origin.replace("http://", "https://")])
+
+    return _deduplicate_preserve_order(origins)
+
+
+def _configure_http_security(
+    transport: str,
+    host: str,
+    port: int,
+    allowed_origin_values: Sequence[str],
+    auth_token: str | None,
+) -> None:
+    """Configure HTTP security settings for FastMCP transports."""
+
+    if transport not in HTTP_TRANSPORTS:
+        # Reset any previous HTTP auth configuration when running stdio sessions.
+        mcp.settings.auth = None
+        mcp._token_verifier = None
+        return
+
+    logger.info("HTTP transport binding to %s:%s", host, port)
+    mcp.settings.host = host
+    mcp.settings.port = port
+
+    allowed_hosts: list[str] = []
+    candidates = [host, f"{host}:{port}"]
+    for local_host in {"127.0.0.1", "localhost"}:
+        candidates.extend([local_host, f"{local_host}:{port}"])
+
+    for candidate in candidates:
+        if candidate not in allowed_hosts:
+            allowed_hosts.append(candidate)
+
+    allowed_origins = _collect_allowed_origins(host, port, allowed_origin_values)
+
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+    )
+    # Ensure the session manager is recreated with the new security settings.
+    if hasattr(mcp, "_session_manager"):
+        mcp._session_manager = None  # type: ignore[attr-defined]
+
+    if auth_token:
+        logger.info("Bearer token authentication enabled for HTTP transports.")
+        mcp.settings.auth = AuthSettings(
+            issuer_url=f"http://{host}:{port}/auth",  # Dummy issuer for shared-secret auth
+            resource_server_url=None,
+            required_scopes=[],
+        )
+        mcp._token_verifier = StaticTokenVerifier(auth_token)
+    else:
+        mcp.settings.auth = None
+        mcp._token_verifier = None
 def _run_tool(
     ctx: Context,
     func: Callable[..., _T],
@@ -450,8 +577,46 @@ def init_pyghidra_context(
     default=Path("pyghidra_mcp_projects/pyghidra_mcp"),
     help="Location on disk which points to the Ghidra project to use. Can be an existing file.",
 )
+@click.option(
+    "--http-host",
+    envvar="PYGHIDRA_MCP_HOST",
+    default="127.0.0.1",
+    show_default=True,
+    help="Hostname to bind for HTTP transports.",
+)
+@click.option(
+    "--http-port",
+    envvar="PYGHIDRA_MCP_PORT",
+    default=8000,
+    show_default=True,
+    type=int,
+    help="Port to bind for HTTP transports.",
+)
+@click.option(
+    "--auth-token",
+    envvar="PYGHIDRA_MCP_AUTH_TOKEN",
+    default=None,
+    help="Shared secret required via Authorization header for HTTP transports.",
+)
+@click.option(
+    "--allowed-origin",
+    "allowed_origins",
+    multiple=True,
+    help=(
+        "Allowed Origin header values for HTTP transports. "
+        "Provide multiple times or use PYGHIDRA_MCP_ALLOWED_ORIGINS for comma-separated entries."
+    ),
+)
 @click.argument("input_paths", type=click.Path(exists=True), nargs=-1)
-def main(transport: str, input_paths: list[Path], project_path: Path) -> None:
+def main(
+    transport: str,
+    input_paths: list[Path],
+    project_path: Path,
+    http_host: str,
+    http_port: int,
+    auth_token: str | None,
+    allowed_origins: tuple[str, ...],
+) -> None:
     """PyGhidra Command-Line MCP server
 
     - input_paths: Path to one or more binaries to import, analyze, and expose with pyghidra-mcp
@@ -464,6 +629,8 @@ def main(transport: str, input_paths: list[Path], project_path: Path) -> None:
     project_directory = str(project_path.parent)
 
     init_pyghidra_context(mcp, input_paths, project_name, project_directory)
+
+    _configure_http_security(transport, http_host, http_port, allowed_origins, auth_token)
 
     @mcp.custom_route("/health", ["GET"])
     async def health(_request) -> JSONResponse:
