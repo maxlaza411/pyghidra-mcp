@@ -379,8 +379,7 @@ def import_binary(binary_path: str, ctx: Context) -> str:
     def _import(pyghidra_context: PyGhidraContext) -> str:
         pyghidra_context.import_binary_backgrounded(binary_path)
         return (
-            f"Importing {binary_path} in the background."
-            "When ready, it will appear analyzed in binary list."
+            f"Importing {binary_path} in the background. When ready, it will appear analyzed in binary list."
         )
 
     return _run_tool(
