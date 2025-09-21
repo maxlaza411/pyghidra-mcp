@@ -124,6 +124,7 @@ class PyGhidraContext:
         self.project_path = Path(project_path)
         self.project: GhidraProject | None = None
         self.programs: dict[str, ProgramInfo] = {}
+        self.active_program_name: str | None = None
         self.chroma_client: chromadb.PersistentClient | None = None
         self._uses_default_gzfs_path = gzfs_path is None
         self.gzfs_path = Path(gzfs_path) if gzfs_path else None
@@ -163,6 +164,7 @@ class PyGhidraContext:
         finally:
             self.project = None
             self.chroma_client = None
+            self.active_program_name = None
 
     def open_project(self, project_path: Path, project_name: str):
         """Attach the context to a specific project on disk."""
@@ -182,6 +184,7 @@ class PyGhidraContext:
             self.programs.clear()
         else:
             self.programs = {}
+        self.active_program_name = None
 
         project = self._get_or_create_project()
         self.project = project
@@ -326,6 +329,13 @@ class PyGhidraContext:
                 code_collection_ready=program_info.collection is not None,
                 strings_collection_ready=program_info.strings_collection is not None,
             )
+        return program_info
+
+    def set_active_program(self, binary_name: str) -> "ProgramInfo":
+        """Select an analyzed program for subsequent tool invocations."""
+
+        program_info = self.get_program_info(binary_name)
+        self.active_program_name = program_info.name
         return program_info
 
     def analyze_now(self, binary_name: str, *, force: bool = False) -> "ProgramInfo":

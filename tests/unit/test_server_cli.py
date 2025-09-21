@@ -57,28 +57,56 @@ def _ensure_stub_modules() -> None:
         server_module.Server = Server
         sys.modules["mcp.server"] = server_module
 
-    fastmcp_module = sys.modules.get("mcp.server.fastmcp")
-    if fastmcp_module is None:
-        fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+    fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+    fastmcp_module.__path__ = []
 
-        class Context:  # pragma: no cover - context stand-in
-            def __init__(self, request_context: Any | None = None) -> None:
-                self.request_context = request_context
+    class Context:  # pragma: no cover - context stand-in
+        def __init__(self, request_context: Any | None = None) -> None:
+            self.request_context = request_context
 
-        class FastMCP:  # pragma: no cover - decorator provider
-            def __init__(self, *args: Any, **kwargs: Any) -> None:
-                pass
+    class FastMCP:  # pragma: no cover - decorator provider
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
 
-            def tool(self, *args: Any, **kwargs: Any):
-                def decorator(func):
-                    return func
+        def tool(self, *args: Any, **kwargs: Any):
+            def decorator(func):
+                return func
 
-                return decorator
+            return decorator
 
-        fastmcp_module.Context = Context
-        fastmcp_module.FastMCP = FastMCP
-        sys.modules["mcp.server.fastmcp"] = fastmcp_module
-        server_module.fastmcp = fastmcp_module
+        def custom_route(self, *args: Any, **kwargs: Any):  # pragma: no cover - stub decorator
+            def decorator(func):
+                return func
+
+            return decorator
+
+    fastmcp_module.Context = Context
+    fastmcp_module.FastMCP = FastMCP
+    resources_module = types.ModuleType("mcp.server.fastmcp.resources")
+    resources_module.__path__ = []
+    resources_types_module = types.ModuleType("mcp.server.fastmcp.resources.types")
+
+    class BinaryResource:  # pragma: no cover - lightweight stub
+        def __init__(self, uri: str, data: bytes, mime_type: str) -> None:
+            self.uri = uri
+            self.data = data
+            self.mime_type = mime_type
+
+    class TextResource:  # pragma: no cover - lightweight stub
+        def __init__(self, uri: str, text: str, mime_type: str) -> None:
+            self.uri = uri
+            self.text = text
+            self.mime_type = mime_type
+
+    resources_types_module.BinaryResource = BinaryResource
+    resources_types_module.TextResource = TextResource
+    resources_types_module.ResourceContents = types.SimpleNamespace
+    resources_module.types = resources_types_module
+    fastmcp_module.resources = resources_module
+    sys.modules["mcp.server.fastmcp.resources"] = resources_module
+    sys.modules["mcp.server.fastmcp.resources.types"] = resources_types_module
+    sys.modules["mcp.server.fastmcp"] = fastmcp_module
+    server_module.fastmcp = fastmcp_module
 
     if "mcp.shared" not in sys.modules:
         shared_package = types.ModuleType("mcp.shared")
@@ -98,6 +126,20 @@ def _ensure_stub_modules() -> None:
         sys.modules["mcp.shared.exceptions"] = shared_exceptions
         sys.modules["mcp.shared"].exceptions = shared_exceptions
 
+    if "starlette" not in sys.modules:
+        starlette_module = types.ModuleType("starlette")
+        responses_module = types.ModuleType("starlette.responses")
+
+        class JSONResponse:  # pragma: no cover - lightweight stub
+            def __init__(self, content: dict | None = None, status_code: int = 200) -> None:
+                self.content = content or {}
+                self.status_code = status_code
+
+        responses_module.JSONResponse = JSONResponse
+        starlette_module.responses = responses_module
+        sys.modules["starlette"] = starlette_module
+        sys.modules["starlette.responses"] = responses_module
+
     types_module = sys.modules.get("mcp.types")
     if types_module is None:
         types_module = types.ModuleType("mcp.types")
@@ -108,9 +150,22 @@ def _ensure_stub_modules() -> None:
                 self.message = message
                 self.data = data
 
+        class ResourceContents:  # pragma: no cover - lightweight stub
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        class CallToolResult:  # pragma: no cover - lightweight stub
+            def __init__(self, structuredContent=None, **kwargs: Any) -> None:
+                self.structuredContent = structuredContent
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
         types_module.ErrorData = ErrorData
         types_module.INTERNAL_ERROR = "INTERNAL_ERROR"
         types_module.INVALID_PARAMS = "INVALID_PARAMS"
+        types_module.ResourceContents = ResourceContents
+        types_module.CallToolResult = CallToolResult
         sys.modules["mcp.types"] = types_module
 
     if "pydantic" not in sys.modules:
@@ -126,6 +181,7 @@ def _ensure_stub_modules() -> None:
 
         pydantic_module.BaseModel = BaseModel
         pydantic_module.Field = Field
+        pydantic_module.ConfigDict = dict
         sys.modules["pydantic"] = pydantic_module
 
 

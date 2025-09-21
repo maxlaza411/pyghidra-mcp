@@ -1,5 +1,6 @@
 # Server
 # ---------------------------------------------------------------------------------
+import inspect
 import json
 import logging
 import sys
@@ -154,10 +155,22 @@ def _run_tool(
     """Execute a tool callable with shared error handling."""
     try:
         pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        if binary_name is not None:
-            program_info = pyghidra_context.get_program_info(binary_name)
+        param_count = len(inspect.signature(func).parameters)
+        expects_program = binary_name is not None or param_count > 1
+
+        if expects_program:
+            target_binary = binary_name
+            if target_binary is None:
+                target_binary = getattr(pyghidra_context, "active_program_name", None)
+                if target_binary is None:
+                    raise ValueError(
+                        "No binary selected. Call select_program(...) first or pass binary_name."
+                    )
+
+            program_info = pyghidra_context.get_program_info(target_binary)
             tools = GhidraTools(program_info)
             return func(pyghidra_context, tools)
+
         return func(pyghidra_context)
     except AnalysisIncompleteError as e:
         message = (
@@ -496,6 +509,27 @@ def list_project_program_info(ctx: Context) -> ProgramInfos:
             ]
         ),
         error_message="Error listing project program info",
+    )
+
+
+@mcp.tool()
+def select_program(binary_name: str, ctx: Context) -> ProgramBasicInfo:
+    """Mark a binary as the default target for subsequent tool invocations."""
+
+    def _select(
+        pyghidra_context: PyGhidraContext, _tools: GhidraTools
+    ) -> ProgramBasicInfo:
+        program_info = pyghidra_context.set_active_program(binary_name)
+        return ProgramBasicInfo(
+            name=program_info.name,
+            analysis_complete=program_info.analysis_complete,
+        )
+
+    return _run_tool(
+        ctx,
+        _select,
+        binary_name=binary_name,
+        error_message="Error selecting program",
     )
 
 

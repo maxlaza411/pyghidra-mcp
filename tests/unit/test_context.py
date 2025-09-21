@@ -126,9 +126,22 @@ def _ensure_context_dependencies() -> None:
                 self.message = message
                 self.data = data
 
+        class ResourceContents:  # pragma: no cover - lightweight stub
+            def __init__(self, *args, **kwargs) -> None:
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        class CallToolResult:  # pragma: no cover - lightweight stub
+            def __init__(self, structuredContent=None, **kwargs) -> None:
+                self.structuredContent = structuredContent
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
         types_module.ErrorData = ErrorData
         types_module.INTERNAL_ERROR = "INTERNAL_ERROR"
         types_module.INVALID_PARAMS = "INVALID_PARAMS"
+        types_module.ResourceContents = ResourceContents
+        types_module.CallToolResult = CallToolResult
         sys.modules["mcp.types"] = types_module
 
     if "pydantic" not in sys.modules:
@@ -144,6 +157,7 @@ def _ensure_context_dependencies() -> None:
 
         pydantic_module.BaseModel = BaseModel
         pydantic_module.Field = Field
+        pydantic_module.ConfigDict = dict
         sys.modules["pydantic"] = pydantic_module
 
     if "tomli" not in sys.modules:
@@ -181,6 +195,7 @@ def test_get_program_info_validation_flow(tmp_path: Path) -> None:
 
     context = PyGhidraContext.__new__(PyGhidraContext)
     context.programs = {}
+    context.active_program_name = None
 
     metadata_path = tmp_path / "binary"
     program_info = ProgramInfo(
@@ -221,6 +236,39 @@ def test_get_program_info_validation_flow(tmp_path: Path) -> None:
     assert program_info.analysis_complete
 
     assert context.get_program_info("binary") is program_info
+
+
+def test_set_active_program_requires_completed_analysis(tmp_path: Path) -> None:
+    """The active selection helper should validate completion before updating state."""
+
+    context = PyGhidraContext.__new__(PyGhidraContext)
+    context.programs = {}
+    context.active_program_name = None
+
+    metadata_path = tmp_path / "binary"
+    program_info = ProgramInfo(
+        name="binary",
+        program=object(),
+        flat_api=None,
+        decompiler=object(),
+        metadata={"Executable Location": str(metadata_path)},
+        ghidra_analysis_complete=True,
+        file_path=metadata_path,
+        load_time=0.0,
+        collection=object(),
+        strings_collection=None,
+    )
+    context.programs["binary"] = program_info
+
+    with pytest.raises(AnalysisIncompleteError):
+        context.set_active_program("binary")
+
+    program_info.strings_collection = object()
+
+    selected = context.set_active_program("binary")
+
+    assert selected is program_info
+    assert context.active_program_name == "binary"
 
 
 def test_import_binary_backgrounded_missing_file(tmp_path: Path) -> None:
