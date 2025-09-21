@@ -52,17 +52,83 @@ class GhidraTools:
         self.program = program_info.program
         self.decompiler = program_info.decompiler
 
-    def _require_function(self, name: str) -> "Function":
+    def _parse_address(self, candidate: str):
+        """Attempt to resolve a string candidate into a Ghidra address."""
+
+        candidate = candidate.strip()
+        if not candidate:
+            return None
+
+        address_factory = self.program.getAddressFactory()
+
+        # First, let Ghidra try to interpret the address directly. This handles
+        # base-prefixed formats (e.g., 0x) or default space qualified strings.
+        try:
+            address = address_factory.getAddress(candidate)
+            if address is not None:
+                return address
+        except Exception:
+            pass
+
+        # Normalise potential hexadecimal strings so both 0x-prefixed and bare
+        # hex forms are accepted.
+        normalized = candidate.lower()
+        if normalized.startswith("0x"):
+            normalized = normalized[2:]
+
+        if re.fullmatch(r"[0-9a-f]+", normalized):
+            try:
+                value = int(normalized, 16)
+                default_space = address_factory.getDefaultAddressSpace()
+                return default_space.getAddress(value)
+            except Exception:
+                return None
+
+        return None
+
+    def _require_function(self, name_or_address: str) -> "Function":
         fm = self.program.getFunctionManager()
-        functions = fm.getFunctions(True)
-        for func in functions:
-            if name == func.name:
+        functions = list(fm.getFunctions(True))
+
+        address = self._parse_address(name_or_address)
+        if address is not None:
+            func = fm.getFunctionAt(address)
+            if func is not None:
                 return func
-        raise ValueError(f"Function {name} not found")
+
+        qualified_matches = [
+            func for func in functions if name_or_address == func.getName(True)
+        ]
+        if len(qualified_matches) == 1:
+            return qualified_matches[0]
+        if len(qualified_matches) > 1:
+            entry_points = ", ".join(str(func.getEntryPoint()) for func in qualified_matches)
+            raise ValueError(
+                "Multiple functions named "
+                f"'{name_or_address}' found at entry points: {entry_points}. "
+                "Use an entry point address to disambiguate."
+            )
+
+        simple_matches = [func for func in functions if name_or_address == func.getName()]
+        if len(simple_matches) == 1:
+            return simple_matches[0]
+        if len(simple_matches) > 1:
+            entry_points = ", ".join(str(func.getEntryPoint()) for func in simple_matches)
+            raise ValueError(
+                "Multiple functions named "
+                f"'{name_or_address}' found at entry points: {entry_points}. "
+                "Use a fully qualified name or entry point address to disambiguate."
+            )
+
+        raise ValueError(f"Function {name_or_address} not found")
 
     def _get_filename(self, func: "Function"):
-        max_path_len = 12
-        return f"{func.getName()[:max_path_len]}-{func.entryPoint}"
+        qualified_name = func.getName(True) or func.getName()
+        sanitized = qualified_name.replace("::", "__")
+        sanitized = re.sub(r"[^0-9A-Za-z_.-]+", "_", sanitized).strip("_")
+        if not sanitized:
+            sanitized = "function"
+        return f"{sanitized}@{func.getEntryPoint()}"
 
     @handle_exceptions
     def decompile_function(self, name: str, timeout: int = 0) -> DecompiledFunction:
@@ -363,9 +429,23 @@ class GhidraTools:
             for i, doc in enumerate(results["documents"][0]):
                 metadata = results["metadatas"][0][i]  # type: ignore
                 distance = results["distances"][0][i]  # type: ignore
+                qualified_name = metadata.get("qualified_name") if metadata else None
+                simple_name = metadata.get("function_name") if metadata else None
+                entry_point = metadata.get("entry_point") if metadata else None
+
+                if isinstance(qualified_name, str) and qualified_name:
+                    name_for_display = qualified_name
+                elif isinstance(simple_name, str) and simple_name:
+                    name_for_display = simple_name
+                else:
+                    name_for_display = "unknown"
+
+                if entry_point:
+                    name_for_display = f"{name_for_display}@{entry_point}"
+
                 search_results.append(
                     CodeSearchResult(
-                        function_name=str(metadata["function_name"]),
+                        function_name=name_for_display,
                         code=doc,
                         similarity=1 - distance,
                     )

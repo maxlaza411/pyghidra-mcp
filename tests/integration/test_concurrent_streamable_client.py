@@ -159,7 +159,7 @@ async def test_concurrent_streamable_client_invocations(streamable_server):
         search_code_result = json.loads(client_responses[8].content[0].text)
         code_search_results = CodeSearchResults(**search_code_result)
         assert len(code_search_results.results) > 0
-        assert code_search_results.results[0].function_name == "function_one"
+        assert "function_one" in code_search_results.results[0].function_name
 
         # Search strings
         search_string_result = json.loads(client_responses[9].content[0].text)
