@@ -97,6 +97,8 @@ class PyGhidraContext:
         gzfs_path: str | Path | None = None,
         threaded: bool = True,
         max_workers: int = multiprocessing.cpu_count(),
+        *,
+        auto_open: bool = True,
     ):
         """
         Initializes a new Ghidra project context.
@@ -112,19 +114,21 @@ class PyGhidraContext:
             gzfs_path: Location to store GZFs of analyzed binaries.
             threaded: Use threading during analysis.
             max_workers: Number of workers for threaded analysis.
+            auto_open: When ``True`` (default), automatically attach to the requested
+                project. Set to ``False`` when the caller will invoke
+                :meth:`open_project` manually.
         """
         from ghidra.base.project import GhidraProject
 
         self.project_name = project_name
         self.project_path = Path(project_path)
-        self.project: GhidraProject = self._get_or_create_project()
+        self.project: GhidraProject | None = None
         self.programs: dict[str, ProgramInfo] = {}
-
-        project_dir = self.project_path / self.project_name
-        chromadb_path = project_dir / "chromadb"
-        self.chroma_client = chromadb.PersistentClient(
-            path=str(chromadb_path), settings=Settings(anonymized_telemetry=False)
-        )
+        self.chroma_client: chromadb.PersistentClient | None = None
+        self._uses_default_gzfs_path = gzfs_path is None
+        self.gzfs_path = Path(gzfs_path) if gzfs_path else None
+        if self.gzfs_path is not None:
+            self.gzfs_path.mkdir(exist_ok=True, parents=True)
 
         # From GhidraDiffEngine
         self.force_analysis = force_analysis
@@ -132,9 +136,6 @@ class PyGhidraContext:
         self.no_symbols = no_symbols
         self.gdts = gdts if gdts is not None else []
         self.program_options = program_options
-        self.gzfs_path = Path(gzfs_path) if gzfs_path else self.project_path / "gzfs"
-        if self.gzfs_path:
-            self.gzfs_path.mkdir(exist_ok=True, parents=True)
 
         self.threaded = threaded
         self.max_workers = max_workers
@@ -142,16 +143,64 @@ class PyGhidraContext:
             logger.warning("--no-threaded flag forcing max_workers to 1")
             self.max_workers = 1
 
+        if auto_open:
+            self.open_project(self.project_path, self.project_name)
+
     def close(self, save: bool = True):
         """
         Saves changes to all open programs and closes the project.
         """
-        for _program_name, program_info in self.programs.items():
-            program = program_info.program
-            self.project.close(program)
+        project = getattr(self, "project", None)
+        if project is None:
+            return
 
-        self.project.close()
-        logger.info(f"Project {self.project_name} closed.")
+        try:
+            for program_info in self.programs.values():
+                project.close(program_info.program)
+
+            project.close()
+            logger.info(f"Project {self.project_name} closed.")
+        finally:
+            self.project = None
+            self.chroma_client = None
+
+    def open_project(self, project_path: Path, project_name: str):
+        """Attach the context to a specific project on disk."""
+
+        project_path = Path(project_path)
+
+        if self.project is not None:
+            try:
+                self.close()
+            except Exception:  # pragma: no cover - defensive cleanup
+                logger.exception("Error closing project before opening new project")
+
+        self.project_path = project_path
+        self.project_name = project_name
+
+        if hasattr(self, "programs"):
+            self.programs.clear()
+        else:
+            self.programs = {}
+
+        project = self._get_or_create_project()
+        self.project = project
+
+        project_dir = self.project_path / self.project_name
+        chromadb_path = project_dir / "chromadb"
+        self.chroma_client = chromadb.PersistentClient(
+            path=str(chromadb_path), settings=Settings(anonymized_telemetry=False)
+        )
+
+        uses_default_gzfs = getattr(self, "_uses_default_gzfs_path", True)
+        current_gzfs_path = getattr(self, "gzfs_path", None)
+        if uses_default_gzfs or current_gzfs_path is None:
+            self.gzfs_path = self.project_path / "gzfs"
+
+        if self.gzfs_path is not None:
+            self.gzfs_path.mkdir(exist_ok=True, parents=True)
+
+        return project
 
     def _get_or_create_project(self) -> "GhidraProject":
         """
