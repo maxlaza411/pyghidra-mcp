@@ -50,8 +50,14 @@ async def server_lifespan(server: Server) -> AsyncIterator[PyGhidraContext]:
     try:
         yield server._pyghidra_context  # type: ignore
     finally:
-        # pyghidra_context.close()
-        pass
+        pyghidra_context = getattr(server, "_pyghidra_context", None)
+        if pyghidra_context is not None:
+            close_method = getattr(pyghidra_context, "close", None)
+            if callable(close_method):
+                try:
+                    close_method()
+                except Exception:  # pragma: no cover - defensive cleanup
+                    logger.exception("Error closing PyGhidraContext during shutdown")
 
 
 mcp = FastMCP("pyghidra-mcp", lifespan=server_lifespan)  # type: ignore
