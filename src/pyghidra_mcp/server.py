@@ -3,10 +3,10 @@
 import json
 import logging
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 from urllib.parse import quote
 
 import click
@@ -27,12 +27,12 @@ from starlette.responses import JSONResponse
 from pyghidra_mcp.__init__ import __version__
 from pyghidra_mcp.context import AnalysisIncompleteError, PyGhidraContext
 from pyghidra_mcp.models import (
+    AnalyzeNowResult,
     CodeSearchResults,
     CrossReferenceInfos,
-    DecompiledFunction,
     ExportInfos,
-    FunctionSearchResults,
     FunctionResourceMetadata,
+    FunctionSearchResults,
     ImportInfos,
     ProgramBasicInfo,
     ProgramBasicInfos,
@@ -618,6 +618,34 @@ def search_strings(
     )
 
 
+@mcp.tool(structured_output=True)
+async def analyze_now(binary_name: str, ctx: Context, force: bool = False) -> AnalyzeNowResult:
+    """Synchronously analyze a binary and rebuild its code and string indexes."""
+
+    def _analyze(pyghidra_context: PyGhidraContext) -> AnalyzeNowResult:
+        program_info = pyghidra_context.analyze_now(binary_name, force=force)
+        analysis_complete = program_info.analysis_complete
+        next_steps = (
+            "Analysis complete. You can now run queries against this binary."
+            if analysis_complete
+            else "Analysis incomplete. Wait for indexing to finish before querying."
+        )
+        return AnalyzeNowResult(
+            binary_name=program_info.name,
+            ghidra_analysis_complete=program_info.ghidra_analysis_complete,
+            code_collection_ready=program_info.collection is not None,
+            strings_collection_ready=program_info.strings_collection is not None,
+            analysis_complete=analysis_complete,
+            next_steps=next_steps,
+        )
+
+    return _run_tool(
+        ctx,
+        _analyze,
+        error_message="Error analyzing binary",
+    )
+
+
 @mcp.tool()
 def import_binary(binary_path: str, ctx: Context) -> str:
     """Imports a binary from a designated path into the current Ghidra project.
@@ -628,7 +656,8 @@ def import_binary(binary_path: str, ctx: Context) -> str:
     def _import(pyghidra_context: PyGhidraContext) -> str:
         pyghidra_context.import_binary_backgrounded(binary_path)
         return (
-            f"Importing {binary_path} in the background. When ready, it will appear analyzed in binary list."
+            f"Importing {binary_path} in the background. "
+            "When ready, it will appear analyzed in binary list."
         )
 
     return _run_tool(
