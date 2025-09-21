@@ -6,6 +6,7 @@ import functools
 import logging
 import re
 import typing
+from typing import Any
 
 from pyghidra_mcp.models import (
     CodeSearchResult,
@@ -51,6 +52,14 @@ class GhidraTools:
         self.program = program_info.program
         self.decompiler = program_info.decompiler
 
+    def _require_function(self, name: str) -> "Function":
+        fm = self.program.getFunctionManager()
+        functions = fm.getFunctions(True)
+        for func in functions:
+            if name == func.name:
+                return func
+        raise ValueError(f"Function {name} not found")
+
     def _get_filename(self, func: "Function"):
         max_path_len = 12
         return f"{func.getName()[:max_path_len]}-{func.entryPoint}"
@@ -60,20 +69,106 @@ class GhidraTools:
         """Decompiles a function in a specified binary and returns its pseudo-C code."""
         from ghidra.util.task import ConsoleTaskMonitor
 
-        fm = self.program.getFunctionManager()
-        functions = fm.getFunctions(True)
-        for func in functions:
-            if name == func.name:
-                monitor = ConsoleTaskMonitor()
-                result: DecompileResults = self.decompiler.decompileFunction(func, timeout, monitor)
-                if "" == result.getErrorMessage():
-                    code = result.decompiledFunction.getC()
-                    sig = result.decompiledFunction.getSignature()
-                else:
-                    code = result.getErrorMessage()
-                    sig = None
-                return DecompiledFunction(name=self._get_filename(func), code=code, signature=sig)
-        raise ValueError(f"Function {name} not found")
+        func = self._require_function(name)
+        monitor = ConsoleTaskMonitor()
+        result: DecompileResults = self.decompiler.decompileFunction(func, timeout, monitor)
+        if "" == result.getErrorMessage():
+            code = result.decompiledFunction.getC()
+            sig = result.decompiledFunction.getSignature()
+        else:
+            code = result.getErrorMessage()
+            sig = None
+        return DecompiledFunction(name=self._get_filename(func), code=code, signature=sig)
+
+    @handle_exceptions
+    def get_function_disassembly(self, name: str) -> str:
+        """Collect a textual disassembly listing for a function."""
+
+        func = self._require_function(name)
+        listing = self.program.getListing()
+        instructions = listing.getInstructions(func.getBody(), True)
+        lines: list[str] = []
+        for instr in instructions:
+            lines.append(f"{instr.getAddress()}:\t{instr}")
+        return "\n".join(lines)
+
+    @handle_exceptions
+    def get_function_callgraph(self, name: str) -> dict[str, list[str]]:
+        """Return caller and callee relationships for a function."""
+
+        from ghidra.util.task import ConsoleTaskMonitor
+
+        func = self._require_function(name)
+        monitor = ConsoleTaskMonitor()
+
+        callers = sorted({caller.getName() for caller in func.getCallingFunctions(monitor)})
+        callees = sorted({callee.getName() for callee in func.getCalledFunctions(monitor)})
+
+        return {"callers": callers, "callees": callees}
+
+    @handle_exceptions
+    def get_function_pcode(self, name: str, timeout: int = 0) -> str:
+        """Return the Pcode operations for a function."""
+
+        from ghidra.util.task import ConsoleTaskMonitor
+
+        func = self._require_function(name)
+        monitor = ConsoleTaskMonitor()
+        result: DecompileResults = self.decompiler.decompileFunction(func, timeout, monitor)
+        if result.getHighFunction() is None:
+            error = result.getErrorMessage()
+            if error:
+                return error
+            return ""
+
+        pcode_ops = result.getHighFunction().getPcodeOps()
+        lines: list[str] = []
+        while pcode_ops.hasNext():
+            op = pcode_ops.next()
+            lines.append(str(op))
+        return "\n".join(lines)
+
+    @handle_exceptions
+    def get_function_analysis_report(self, name: str) -> tuple[str, dict[str, Any]]:
+        """Generate a lightweight analysis summary for a function."""
+
+        func = self._require_function(name)
+        body = func.getBody()
+        entry_point = func.getEntryPoint()
+        signature = func.getSignature()
+        language = self.program.getLanguage()
+        parameters = list(func.getParameters())
+        locals_ = list(func.getLocalVariables())
+
+        metrics = {
+            "entry_point": str(entry_point),
+            "language": language.getLanguageDescription() if language else None,
+            "signature": str(signature),
+            "body_size": body.getNumAddresses() if body else 0,
+            "parameter_count": len(parameters),
+            "local_variable_count": len(locals_),
+        }
+
+        report = [
+            f"Function: {func.getName()} ({entry_point})",
+            f"Language: {language.getLanguageDescription() if language else 'unknown'}",
+            f"Signature: {signature}",
+            f"Body size (bytes): {body.getNumAddresses() if body else 0}",
+            f"Parameter count: {len(parameters)}",
+            f"Local variable count: {len(locals_)}",
+        ]
+
+        if parameters:
+            report.append("Parameters:")
+            for param in parameters:
+                report.append(f"  - {param.getName()} : {param.getDataType()}")
+
+        if locals_:
+            report.append("Locals:")
+            for local in locals_:
+                report.append(f"  - {local.getName()} : {local.getDataType()} @ {local.getMinAddress()}")
+
+        return "\n".join(report), metrics
 
     @handle_exceptions
     def get_all_functions(self, include_externals=False) -> list["Function"]:

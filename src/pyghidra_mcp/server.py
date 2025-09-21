@@ -1,18 +1,27 @@
 # Server
 # ---------------------------------------------------------------------------------
+import json
 import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Any, Callable, TypeVar
+from urllib.parse import quote
 
 import click
 import pyghidra
 from mcp.server import Server
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.resources.types import BinaryResource, TextResource
 from mcp.shared.exceptions import McpError
-from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, ErrorData
+from mcp.types import (
+    INTERNAL_ERROR,
+    INVALID_PARAMS,
+    CallToolResult,
+    ErrorData,
+    ResourceContents,
+)
 
 from pyghidra_mcp.__init__ import __version__
 from pyghidra_mcp.context import AnalysisIncompleteError, PyGhidraContext
@@ -22,6 +31,7 @@ from pyghidra_mcp.models import (
     DecompiledFunction,
     ExportInfos,
     FunctionSearchResults,
+    FunctionResourceMetadata,
     ImportInfos,
     ProgramBasicInfo,
     ProgramBasicInfos,
@@ -63,8 +73,76 @@ async def server_lifespan(server: Server) -> AsyncIterator[PyGhidraContext]:
 mcp = FastMCP("pyghidra-mcp", lifespan=server_lifespan)  # type: ignore
 
 
+def _calltoolresult_resources(self: CallToolResult) -> list[ResourceContents]:
+    structured = self.structuredContent or {}
+    raw_resources = structured.get("resources") or []
+    resources: list[ResourceContents] = []
+    for item in raw_resources:
+        if isinstance(item, ResourceContents):
+            resources.append(item)
+        else:
+            try:
+                resources.append(ResourceContents.model_validate(item))
+            except Exception:
+                continue
+    return resources
+
+
+if not hasattr(CallToolResult, "resources"):
+    CallToolResult.resources = property(_calltoolresult_resources)  # type: ignore[attr-defined]
+
+
 # Helpers
 # ---------------------------------------------------------------------------------
+def _function_resource_uri(binary_name: str, function_name: str, artifact: str) -> str:
+    return "ghidra://program/{}/function/{}/{}".format(
+        quote(binary_name, safe=""), quote(function_name, safe=""), quote(artifact, safe="")
+    )
+
+
+def _publish_resource(
+    ctx: Context, *, uri: str, data: str | bytes, mime_type: str
+) -> ResourceContents:
+    resource_manager = getattr(ctx.fastmcp, "_resource_manager", None)
+    if resource_manager is not None:
+        try:
+            resource_manager._resources.pop(uri, None)  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+
+    if isinstance(data, str):
+        resource = TextResource(uri=uri, text=data, mime_type=mime_type)
+    else:
+        resource = BinaryResource(uri=uri, data=data, mime_type=mime_type)
+
+    ctx.fastmcp.add_resource(resource)
+    return ResourceContents(uri=uri, mimeType=mime_type)
+
+
+def _make_artifact_metadata(
+    *,
+    binary_name: str,
+    function_name: str,
+    artifact_type: str,
+    summary: str,
+    resource: ResourceContents,
+    mime_type: str,
+    signature: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> FunctionResourceMetadata:
+    return FunctionResourceMetadata(
+        binary_name=binary_name,
+        function_name=function_name,
+        artifact_type=artifact_type,
+        summary=summary,
+        resource_uri=str(resource.uri),
+        mime_type=mime_type,
+        signature=signature,
+        details=details,
+        resources=[resource],
+    )
+
+
 def _run_tool(
     ctx: Context,
     func: Callable[..., _T],
@@ -105,8 +183,10 @@ def _run_tool(
 
 # MCP Tools
 # ---------------------------------------------------------------------------------
-@mcp.tool()
-async def decompile_function(binary_name: str, name: str, ctx: Context) -> DecompiledFunction:
+@mcp.tool(structured_output=True)
+async def decompile_function(
+    binary_name: str, name: str, ctx: Context
+) -> FunctionResourceMetadata:
     """Decompiles a function in a specified binary and returns its pseudo-C code.
 
     Args:
@@ -115,9 +195,178 @@ async def decompile_function(binary_name: str, name: str, ctx: Context) -> Decom
     """
     return _run_tool(
         ctx,
-        lambda _pyghidra_context, tools: tools.decompile_function(name),
+        lambda _pyghidra_context, tools: _decompile_function_artifact(
+            ctx, binary_name, name, tools
+        ),
         binary_name=binary_name,
         error_message="Error decompiling function",
+    )
+
+
+def _decompile_function_artifact(
+    ctx: Context, binary_name: str, name: str, tools: GhidraTools
+) -> FunctionResourceMetadata:
+    decomp = tools.decompile_function(name)
+    func = tools._require_function(name)
+    uri = _function_resource_uri(binary_name, name, "decompiled")
+    mime_type = "text/x-c"
+    resource = _publish_resource(ctx, uri=uri, data=decomp.code, mime_type=mime_type)
+    summary = f"Pseudo-C decompilation for {name} in {binary_name}."
+    details = {
+        "entry_point": str(func.getEntryPoint()),
+        "file_hint": decomp.name,
+    }
+    return _make_artifact_metadata(
+        binary_name=binary_name,
+        function_name=name,
+        artifact_type="decompilation",
+        summary=summary,
+        resource=resource,
+        mime_type=mime_type,
+        signature=decomp.signature,
+        details=details,
+    )
+
+
+@mcp.tool(structured_output=True)
+async def get_function_disassembly(
+    binary_name: str, name: str, ctx: Context
+) -> FunctionResourceMetadata:
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: _disassembly_artifact(ctx, binary_name, name, tools),
+        binary_name=binary_name,
+        error_message="Error fetching disassembly",
+    )
+
+
+def _disassembly_artifact(
+    ctx: Context, binary_name: str, name: str, tools: GhidraTools
+) -> FunctionResourceMetadata:
+    listing = tools.get_function_disassembly(name)
+    func = tools._require_function(name)
+    uri = _function_resource_uri(binary_name, name, "disassembly")
+    mime_type = "text/x-asm"
+    resource = _publish_resource(ctx, uri=uri, data=listing, mime_type=mime_type)
+    summary = f"Assembly listing for {name} in {binary_name}."
+    details = {
+        "entry_point": str(func.getEntryPoint()),
+        "instruction_count": listing.count("\n") + (1 if listing else 0),
+    }
+    signature = str(func.getSignature()) if func.getSignature() else None
+    return _make_artifact_metadata(
+        binary_name=binary_name,
+        function_name=name,
+        artifact_type="disassembly",
+        summary=summary,
+        resource=resource,
+        mime_type=mime_type,
+        signature=signature,
+        details=details,
+    )
+
+
+@mcp.tool(structured_output=True)
+async def get_function_pcode(
+    binary_name: str, name: str, ctx: Context
+) -> FunctionResourceMetadata:
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: _pcode_artifact(ctx, binary_name, name, tools),
+        binary_name=binary_name,
+        error_message="Error fetching pcode",
+    )
+
+
+def _pcode_artifact(
+    ctx: Context, binary_name: str, name: str, tools: GhidraTools
+) -> FunctionResourceMetadata:
+    pcode = tools.get_function_pcode(name)
+    func = tools._require_function(name)
+    uri = _function_resource_uri(binary_name, name, "pcode")
+    mime_type = "text/x-pcode"
+    resource = _publish_resource(ctx, uri=uri, data=pcode, mime_type=mime_type)
+    summary = f"Pcode listing for {name} in {binary_name}."
+    signature = str(func.getSignature()) if func.getSignature() else None
+    details = {"entry_point": str(func.getEntryPoint())}
+    return _make_artifact_metadata(
+        binary_name=binary_name,
+        function_name=name,
+        artifact_type="pcode",
+        summary=summary,
+        resource=resource,
+        mime_type=mime_type,
+        signature=signature,
+        details=details,
+    )
+
+
+@mcp.tool(structured_output=True)
+async def get_function_callgraph(
+    binary_name: str, name: str, ctx: Context
+) -> FunctionResourceMetadata:
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: _callgraph_artifact(ctx, binary_name, name, tools),
+        binary_name=binary_name,
+        error_message="Error fetching callgraph",
+    )
+
+
+def _callgraph_artifact(
+    ctx: Context, binary_name: str, name: str, tools: GhidraTools
+) -> FunctionResourceMetadata:
+    graph = tools.get_function_callgraph(name)
+    graph_text = json.dumps(graph, indent=2, sort_keys=True)
+    func = tools._require_function(name)
+    uri = _function_resource_uri(binary_name, name, "callgraph")
+    mime_type = "application/json"
+    resource = _publish_resource(ctx, uri=uri, data=graph_text, mime_type=mime_type)
+    summary = f"Callgraph relationships for {name} in {binary_name}."
+    signature = str(func.getSignature()) if func.getSignature() else None
+    return _make_artifact_metadata(
+        binary_name=binary_name,
+        function_name=name,
+        artifact_type="callgraph",
+        summary=summary,
+        resource=resource,
+        mime_type=mime_type,
+        signature=signature,
+        details={"callers": graph.get("callers", []), "callees": graph.get("callees", [])},
+    )
+
+
+@mcp.tool(structured_output=True)
+async def get_function_analysis_report(
+    binary_name: str, name: str, ctx: Context
+) -> FunctionResourceMetadata:
+    return _run_tool(
+        ctx,
+        lambda _pyghidra_context, tools: _analysis_artifact(ctx, binary_name, name, tools),
+        binary_name=binary_name,
+        error_message="Error fetching analysis report",
+    )
+
+
+def _analysis_artifact(
+    ctx: Context, binary_name: str, name: str, tools: GhidraTools
+) -> FunctionResourceMetadata:
+    report, metrics = tools.get_function_analysis_report(name)
+    func = tools._require_function(name)
+    uri = _function_resource_uri(binary_name, name, "analysis")
+    mime_type = "text/plain"
+    resource = _publish_resource(ctx, uri=uri, data=report, mime_type=mime_type)
+    summary = f"Analysis summary for {name} in {binary_name}."
+    signature = str(func.getSignature()) if func.getSignature() else None
+    return _make_artifact_metadata(
+        binary_name=binary_name,
+        function_name=name,
+        artifact_type="analysis",
+        summary=summary,
+        resource=resource,
+        mime_type=mime_type,
+        signature=signature,
+        details=metrics,
     )
 
 
