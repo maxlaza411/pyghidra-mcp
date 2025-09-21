@@ -93,6 +93,23 @@ def _ensure_context_dependencies() -> None:
 
         fastmcp_module.Context = Context
         fastmcp_module.FastMCP = FastMCP
+        resources_module = types.ModuleType("mcp.server.fastmcp.resources")
+        resources_types = types.ModuleType("mcp.server.fastmcp.resources.types")
+
+        class BinaryResource:  # pragma: no cover - lightweight stub
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+        class TextResource:  # pragma: no cover - lightweight stub
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+        resources_types.BinaryResource = BinaryResource
+        resources_types.TextResource = TextResource
+        resources_module.types = resources_types
+        sys.modules["mcp.server.fastmcp.resources.types"] = resources_types
+        sys.modules["mcp.server.fastmcp.resources"] = resources_module
+        fastmcp_module.resources = resources_module
         sys.modules["mcp.server.fastmcp"] = fastmcp_module
         server_module.fastmcp = fastmcp_module
 
@@ -126,9 +143,23 @@ def _ensure_context_dependencies() -> None:
                 self.message = message
                 self.data = data
 
+        class ResourceContents:  # pragma: no cover - lightweight stub
+            def __init__(self, **kwargs) -> None:
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        class CallToolResult:  # pragma: no cover - lightweight stub
+            def __init__(self, **kwargs) -> None:
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+            structuredContent: list | None = None
+
         types_module.ErrorData = ErrorData
         types_module.INTERNAL_ERROR = "INTERNAL_ERROR"
         types_module.INVALID_PARAMS = "INVALID_PARAMS"
+        types_module.ResourceContents = ResourceContents
+        types_module.CallToolResult = CallToolResult
         sys.modules["mcp.types"] = types_module
 
     if "pydantic" not in sys.modules:
@@ -142,8 +173,13 @@ def _ensure_context_dependencies() -> None:
         def Field(default, *args, **kwargs):  # pragma: no cover - lightweight stub
             return default
 
+        class ConfigDict(dict):  # pragma: no cover - simple alias
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+
         pydantic_module.BaseModel = BaseModel
         pydantic_module.Field = Field
+        pydantic_module.ConfigDict = ConfigDict
         sys.modules["pydantic"] = pydantic_module
 
     if "tomli" not in sys.modules:
@@ -222,6 +258,74 @@ def test_get_program_info_validation_flow(tmp_path: Path) -> None:
 
     assert context.get_program_info("binary") is program_info
 
+
+def test_set_active_program_updates_state(tmp_path: Path) -> None:
+    """Selecting a program should validate and persist the active program name."""
+
+    context = PyGhidraContext.__new__(PyGhidraContext)
+    context.programs = {}
+    context.active_program_name = None
+
+    metadata_path = tmp_path / "binary"
+    program_info = ProgramInfo(
+        name="binary",
+        program=object(),
+        flat_api=None,
+        decompiler=object(),
+        metadata={"Executable Location": str(metadata_path)},
+        ghidra_analysis_complete=True,
+        file_path=metadata_path,
+        load_time=0.0,
+        collection=object(),
+        strings_collection=object(),
+    )
+    context.programs["binary"] = program_info
+
+    selected = context.set_active_program("binary")
+
+    assert selected is program_info
+    assert context.active_program_name == "binary"
+
+
+def test_set_active_program_requires_completed_analysis(tmp_path: Path) -> None:
+    """Active program selection should fail if analysis has not finished."""
+
+    context = PyGhidraContext.__new__(PyGhidraContext)
+    context.programs = {}
+    context.active_program_name = "existing"
+
+    metadata_path = tmp_path / "incomplete"
+    incomplete = ProgramInfo(
+        name="incomplete",
+        program=object(),
+        flat_api=None,
+        decompiler=object(),
+        metadata={"Executable Location": str(metadata_path)},
+        ghidra_analysis_complete=True,
+        file_path=metadata_path,
+        load_time=0.0,
+        collection=object(),
+        strings_collection=None,
+    )
+    context.programs["incomplete"] = incomplete
+
+    with pytest.raises(AnalysisIncompleteError):
+        context.set_active_program("incomplete")
+
+    assert context.active_program_name == "existing"
+
+
+def test_get_active_program_info_requires_selection() -> None:
+    """Requesting the active program without selection should raise a helpful error."""
+
+    context = PyGhidraContext.__new__(PyGhidraContext)
+    context.programs = {}
+    context.active_program_name = None
+
+    with pytest.raises(ValueError) as excinfo:
+        context.get_active_program_info()
+
+    assert "No active program selected" in str(excinfo.value)
 
 def test_import_binary_backgrounded_missing_file(tmp_path: Path) -> None:
     """The background importer should surface missing binaries immediately."""

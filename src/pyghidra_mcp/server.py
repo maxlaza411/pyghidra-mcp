@@ -1,5 +1,6 @@
 # Server
 # ---------------------------------------------------------------------------------
+import inspect
 import json
 import logging
 import sys
@@ -29,7 +30,6 @@ from pyghidra_mcp.context import AnalysisIncompleteError, PyGhidraContext
 from pyghidra_mcp.models import (
     CodeSearchResults,
     CrossReferenceInfos,
-    DecompiledFunction,
     ExportInfos,
     FunctionSearchResults,
     FunctionResourceMetadata,
@@ -154,10 +154,29 @@ def _run_tool(
     """Execute a tool callable with shared error handling."""
     try:
         pyghidra_context: PyGhidraContext = ctx.request_context.lifespan_context
-        if binary_name is not None:
-            program_info = pyghidra_context.get_program_info(binary_name)
+        parameters = list(inspect.signature(func).parameters.values())
+        positional_count = 0
+        expects_tools = False
+        for parameter in parameters:
+            if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+                expects_tools = True
+                break
+            if parameter.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            ):
+                positional_count += 1
+        if positional_count >= 2:
+            expects_tools = True
+
+        if expects_tools:
+            if binary_name is not None:
+                program_info = pyghidra_context.get_program_info(binary_name)
+            else:
+                program_info = pyghidra_context.get_active_program_info()
             tools = GhidraTools(program_info)
             return func(pyghidra_context, tools)
+
         return func(pyghidra_context)
     except AnalysisIncompleteError as e:
         message = (
@@ -186,18 +205,20 @@ def _run_tool(
 # ---------------------------------------------------------------------------------
 @mcp.tool(structured_output=True)
 async def decompile_function(
-    binary_name: str, name: str, ctx: Context
+    name: str,
+    ctx: Context,
+    binary_name: str | None = None,
 ) -> FunctionResourceMetadata:
-    """Decompiles a function in a specified binary and returns its pseudo-C code.
+    """Decompiles a function and returns its pseudo-C code.
 
     Args:
-        binary_name: The name of the binary containing the function.
         name: The name of the function to decompile.
+        binary_name: Optional name of the binary. When omitted, the active program is used.
     """
     return _run_tool(
         ctx,
         lambda _pyghidra_context, tools: _decompile_function_artifact(
-            ctx, binary_name, name, tools
+            ctx, tools.program_info.name, name, tools
         ),
         binary_name=binary_name,
         error_message="Error decompiling function",
@@ -231,11 +252,15 @@ def _decompile_function_artifact(
 
 @mcp.tool(structured_output=True)
 async def get_function_disassembly(
-    binary_name: str, name: str, ctx: Context
+    name: str,
+    ctx: Context,
+    binary_name: str | None = None,
 ) -> FunctionResourceMetadata:
     return _run_tool(
         ctx,
-        lambda _pyghidra_context, tools: _disassembly_artifact(ctx, binary_name, name, tools),
+        lambda _pyghidra_context, tools: _disassembly_artifact(
+            ctx, tools.program_info.name, name, tools
+        ),
         binary_name=binary_name,
         error_message="Error fetching disassembly",
     )
@@ -269,11 +294,15 @@ def _disassembly_artifact(
 
 @mcp.tool(structured_output=True)
 async def get_function_pcode(
-    binary_name: str, name: str, ctx: Context
+    name: str,
+    ctx: Context,
+    binary_name: str | None = None,
 ) -> FunctionResourceMetadata:
     return _run_tool(
         ctx,
-        lambda _pyghidra_context, tools: _pcode_artifact(ctx, binary_name, name, tools),
+        lambda _pyghidra_context, tools: _pcode_artifact(
+            ctx, tools.program_info.name, name, tools
+        ),
         binary_name=binary_name,
         error_message="Error fetching pcode",
     )
@@ -304,11 +333,15 @@ def _pcode_artifact(
 
 @mcp.tool(structured_output=True)
 async def get_function_callgraph(
-    binary_name: str, name: str, ctx: Context
+    name: str,
+    ctx: Context,
+    binary_name: str | None = None,
 ) -> FunctionResourceMetadata:
     return _run_tool(
         ctx,
-        lambda _pyghidra_context, tools: _callgraph_artifact(ctx, binary_name, name, tools),
+        lambda _pyghidra_context, tools: _callgraph_artifact(
+            ctx, tools.program_info.name, name, tools
+        ),
         binary_name=binary_name,
         error_message="Error fetching callgraph",
     )
@@ -339,11 +372,15 @@ def _callgraph_artifact(
 
 @mcp.tool(structured_output=True)
 async def get_function_analysis_report(
-    binary_name: str, name: str, ctx: Context
+    name: str,
+    ctx: Context,
+    binary_name: str | None = None,
 ) -> FunctionResourceMetadata:
     return _run_tool(
         ctx,
-        lambda _pyghidra_context, tools: _analysis_artifact(ctx, binary_name, name, tools),
+        lambda _pyghidra_context, tools: _analysis_artifact(
+            ctx, tools.program_info.name, name, tools
+        ),
         binary_name=binary_name,
         error_message="Error fetching analysis report",
     )
@@ -373,12 +410,16 @@ def _analysis_artifact(
 
 @mcp.tool()
 def search_functions_by_name(
-    binary_name: str, query: str, ctx: Context, offset: int = 0, limit: int = 25
+    query: str,
+    ctx: Context,
+    offset: int = 0,
+    limit: int = 25,
+    binary_name: str | None = None,
 ) -> FunctionSearchResults:
     """Searches for functions within a binary by name.
 
     Args:
-        binary_name: The name of the binary to search within.
+        binary_name: Optional name of the binary to search within. Falls back to the active program.
         query: The substring to search for in function names (case-insensitive).
         offset: The number of results to skip.
         limit: The maximum number of results to return.
@@ -395,7 +436,11 @@ def search_functions_by_name(
 
 @mcp.tool()
 def search_symbols_by_name(
-    binary_name: str, query: str, ctx: Context, offset: int = 0, limit: int = 25
+    query: str,
+    ctx: Context,
+    offset: int = 0,
+    limit: int = 25,
+    binary_name: str | None = None,
 ) -> SymbolSearchResults:
     """
     Search for symbols by case insensitive substring within a specific binary
@@ -405,7 +450,7 @@ def search_symbols_by_name(
     Return: A paginatedlist of matches.
 
     Args:
-        binary_name: The name of the binary to search within.
+        binary_name: Optional name of the binary to search within. Falls back to the active program.
         query: The substring to search for in symbol names (case-insensitive).
         offset: The number of results to skip.
         limit: The maximum number of results to return.
@@ -421,7 +466,12 @@ def search_symbols_by_name(
 
 
 @mcp.tool()
-def search_code(binary_name: str, query: str, ctx: Context, limit: int = 5) -> CodeSearchResults:
+def search_code(
+    query: str,
+    ctx: Context,
+    limit: int = 5,
+    binary_name: str | None = None,
+) -> CodeSearchResults:
     """
     Perform a semantic code search over a binarys decompiled pseudo C output
     powered by a vector database for similarity matching.
@@ -435,7 +485,7 @@ def search_code(binary_name: str, query: str, ctx: Context, limit: int = 5) -> C
     signature or key logic snippet to minimize irrelevant matches.
 
     Args:
-        binary_name: Name of the binary to search within.
+        binary_name: Optional name of the binary to search within. Falls back to the active program.
         query: Code snippet signature or description to match via semantic search.
         limit: Maximum number of top scoring results to return (default: 5).
     """
@@ -499,13 +549,31 @@ def list_project_program_info(ctx: Context) -> ProgramInfos:
     )
 
 
+@mcp.tool(structured_output=True)
+def select_program(binary_name: str, ctx: Context) -> ProgramBasicInfo:
+    """Select the active program used when `binary_name` is omitted from tool calls."""
+
+    def _select(pyghidra_context: PyGhidraContext) -> ProgramBasicInfo:
+        program_info = pyghidra_context.set_active_program(binary_name)
+        return ProgramBasicInfo(
+            name=program_info.name,
+            analysis_complete=program_info.analysis_complete,
+        )
+
+    return _run_tool(
+        ctx,
+        _select,
+        error_message="Error selecting program",
+    )
+
+
 @mcp.tool()
 def list_exports(
-    binary_name: str,
     ctx: Context,
     query: str = ".*",
     offset: int = 0,
     limit: int = 25,
+    binary_name: str | None = None,
 ) -> ExportInfos:
     """
     Retrieve exported functions and symbols from a given binary,
@@ -517,7 +585,7 @@ def list_exports(
     to list only initialization-related exports.
 
     Args:
-        binary_name: Name of the binary to inspect.
+        binary_name: Optional name of the binary to inspect. Falls back to the active program.
         query: Strongly recommended. Regex pattern to match specific
                export names. Use to limit irrelevant results and narrow
                context for analysis.
@@ -536,11 +604,11 @@ def list_exports(
 
 @mcp.tool()
 def list_imports(
-    binary_name: str,
     ctx: Context,
     query: str = ".*",
     offset: int = 0,
     limit: int = 25,
+    binary_name: str | None = None,
 ) -> ImportInfos:
     """
     Retrieve imported functions and symbols from a given binary,
@@ -552,7 +620,7 @@ def list_imports(
     For example: `query="socket"` to only see socket-related imports.
 
     Args:
-        binary_name: Name of the binary to inspect.
+        binary_name: Optional name of the binary to inspect. Falls back to the active program.
         query: Strongly recommended. Regex pattern to match specific
                import names. Use to reduce irrelevant results and narrow
                context for downstream reasoning.
@@ -571,7 +639,9 @@ def list_imports(
 
 @mcp.tool()
 def list_cross_references(
-    binary_name: str, name_or_address: str, ctx: Context
+    name_or_address: str,
+    ctx: Context,
+    binary_name: str | None = None,
 ) -> CrossReferenceInfos:
     """Finds and lists all cross-references (x-refs) to a given function, symbol, or address within
     a binary. This is crucial for understanding how code and data are used and related.
@@ -579,7 +649,7 @@ def list_cross_references(
     the error message will suggest other symbols that are close matches.
 
     Args:
-        binary_name: The name of the binary to search for cross-references in.
+        binary_name: Optional name of the binary to search for cross-references in. Falls back to the active program.
         name_or_address: The name of the function, symbol, or a specific address (e.g., '0x1004010')
         to find cross-references to.
     """
@@ -595,16 +665,16 @@ def list_cross_references(
 
 @mcp.tool()
 def search_strings(
-    binary_name: str,
-    ctx: Context,
     query: str,
+    ctx: Context,
     limit: int = 100,
+    binary_name: str | None = None,
 ) -> StringSearchResults:
     """Searches for strings within a binary by name.
     This can be very useful to gain general understanding of behaviors.
 
     Args:
-        binary_name: The name of the binary to search within.
+        binary_name: Optional name of the binary to search within. Falls back to the active program.
         query: A query to filter strings by.
         limit: The maximum number of results to return.
     """

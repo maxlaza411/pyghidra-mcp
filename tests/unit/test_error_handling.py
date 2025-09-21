@@ -5,9 +5,16 @@ from __future__ import annotations
 import sys
 import types
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_PATH = PROJECT_ROOT / "src"
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
 
 
 def _ensure_stub_modules() -> None:
@@ -58,8 +65,13 @@ def _ensure_stub_modules() -> None:
         def Field(default, *args, **kwargs):  # pragma: no cover - stub behaviour
             return default
 
+        class ConfigDict(dict):  # pragma: no cover - simple alias
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+
         pydantic_module.BaseModel = BaseModel
         pydantic_module.Field = Field
+        pydantic_module.ConfigDict = ConfigDict
         sys.modules["pydantic"] = pydantic_module
 
     if "tomli" not in sys.modules:
@@ -100,6 +112,23 @@ def _ensure_stub_modules() -> None:
 
         fastmcp_module.Context = Context
         fastmcp_module.FastMCP = FastMCP
+        resources_module = types.ModuleType("mcp.server.fastmcp.resources")
+        resources_types = types.ModuleType("mcp.server.fastmcp.resources.types")
+
+        class BinaryResource:  # pragma: no cover - stub container
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+        class TextResource:  # pragma: no cover - stub container
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+        resources_types.BinaryResource = BinaryResource
+        resources_types.TextResource = TextResource
+        resources_module.types = resources_types
+        sys.modules["mcp.server.fastmcp.resources.types"] = resources_types
+        sys.modules["mcp.server.fastmcp.resources"] = resources_module
+        fastmcp_module.resources = resources_module
         sys.modules["mcp.server.fastmcp"] = fastmcp_module
         server_module.fastmcp = fastmcp_module
 
@@ -131,9 +160,23 @@ def _ensure_stub_modules() -> None:
             message: str
             data: dict | None = None
 
+        class ResourceContents:  # pragma: no cover - stub container
+            def __init__(self, **kwargs) -> None:
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        class CallToolResult:  # pragma: no cover - stub container
+            def __init__(self, **kwargs) -> None:
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+            structuredContent: list | None = None
+
         types_module.ErrorData = ErrorData
         types_module.INTERNAL_ERROR = "INTERNAL_ERROR"
         types_module.INVALID_PARAMS = "INVALID_PARAMS"
+        types_module.ResourceContents = ResourceContents
+        types_module.CallToolResult = CallToolResult
         sys.modules["mcp.types"] = types_module
 
 
@@ -142,7 +185,7 @@ _ensure_stub_modules()
 from mcp.shared.exceptions import McpError
 from mcp.types import INVALID_PARAMS
 from pyghidra_mcp.context import AnalysisIncompleteError, ProgramInfo, PyGhidraContext
-from pyghidra_mcp.server import _run_tool
+from pyghidra_mcp.server import _run_tool, select_program
 
 
 def test_analysis_incomplete_error_details():
@@ -218,3 +261,83 @@ def test_run_tool_maps_analysis_incomplete_error_to_mcp_error():
         "strings_collection_ready": False,
         "suggestion": "Wait and try tool call again.",
     }
+
+
+def test_select_program_sets_active_binary():
+    """The selection tool should validate analysis state and persist the choice."""
+
+    context = PyGhidraContext.__new__(PyGhidraContext)
+    program_info = ProgramInfo(
+        name="binary",
+        program=object(),
+        flat_api=None,
+        decompiler=object(),
+        metadata={},
+        ghidra_analysis_complete=True,
+        file_path=None,
+        load_time=0.0,
+        collection=object(),
+        strings_collection=object(),
+    )
+    context.programs = {"binary": program_info}
+    context.active_program_name = None
+
+    request_context = SimpleNamespace(lifespan_context=context)
+    ctx = SimpleNamespace(request_context=request_context)
+
+    result = select_program("binary", ctx)
+
+    assert result.name == "binary"
+    assert result.analysis_complete is True
+    assert context.active_program_name == "binary"
+
+
+def test_run_tool_uses_active_program_when_binary_missing():
+    """Tool helpers should fall back to the selected program when none is provided."""
+
+    context = PyGhidraContext.__new__(PyGhidraContext)
+    program_info = ProgramInfo(
+        name="binary",
+        program=object(),
+        flat_api=None,
+        decompiler=object(),
+        metadata={},
+        ghidra_analysis_complete=True,
+        file_path=None,
+        load_time=0.0,
+        collection=object(),
+        strings_collection=object(),
+    )
+    context.programs = {"binary": program_info}
+    context.active_program_name = None
+
+    request_context = SimpleNamespace(lifespan_context=context)
+    ctx = SimpleNamespace(request_context=request_context)
+
+    select_program("binary", ctx)
+
+    captured: dict[str, str] = {}
+
+    def fake_tool(_pyghidra_context, tools):
+        captured["name"] = tools.program_info.name
+        return "ok"
+
+    assert _run_tool(ctx, fake_tool, error_message="should use active") == "ok"
+    assert captured == {"name": "binary"}
+
+
+def test_run_tool_without_selection_raises_clear_error():
+    """Invocations needing tools should explain when no program is selected."""
+
+    context = PyGhidraContext.__new__(PyGhidraContext)
+    context.programs = {}
+    context.active_program_name = None
+
+    request_context = SimpleNamespace(lifespan_context=context)
+    ctx = SimpleNamespace(request_context=request_context)
+
+    with pytest.raises(McpError) as excinfo:
+        _run_tool(ctx, lambda _ctx, _tools: None, error_message="unused")
+
+    message = excinfo.value.error_data.message
+    assert message.startswith("No active program selected")

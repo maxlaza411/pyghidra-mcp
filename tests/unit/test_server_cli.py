@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
 from click.testing import CliRunner
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_PATH = PROJECT_ROOT / "src"
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
 
 
 def _ensure_stub_modules() -> None:
@@ -77,6 +84,23 @@ def _ensure_stub_modules() -> None:
 
         fastmcp_module.Context = Context
         fastmcp_module.FastMCP = FastMCP
+        resources_module = types.ModuleType("mcp.server.fastmcp.resources")
+        resources_types = types.ModuleType("mcp.server.fastmcp.resources.types")
+
+        class BinaryResource:  # pragma: no cover - stub container
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        class TextResource:  # pragma: no cover - stub container
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        resources_types.BinaryResource = BinaryResource
+        resources_types.TextResource = TextResource
+        resources_module.types = resources_types
+        sys.modules["mcp.server.fastmcp.resources.types"] = resources_types
+        sys.modules["mcp.server.fastmcp.resources"] = resources_module
+        fastmcp_module.resources = resources_module
         sys.modules["mcp.server.fastmcp"] = fastmcp_module
         server_module.fastmcp = fastmcp_module
 
@@ -108,9 +132,23 @@ def _ensure_stub_modules() -> None:
                 self.message = message
                 self.data = data
 
+        class ResourceContents:  # pragma: no cover - stub container
+            def __init__(self, **kwargs: Any) -> None:
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        class CallToolResult:  # pragma: no cover - stub container
+            def __init__(self, **kwargs: Any) -> None:
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+            structuredContent: list | None = None
+
         types_module.ErrorData = ErrorData
         types_module.INTERNAL_ERROR = "INTERNAL_ERROR"
         types_module.INVALID_PARAMS = "INVALID_PARAMS"
+        types_module.ResourceContents = ResourceContents
+        types_module.CallToolResult = CallToolResult
         sys.modules["mcp.types"] = types_module
 
     if "pydantic" not in sys.modules:
@@ -124,8 +162,13 @@ def _ensure_stub_modules() -> None:
         def Field(default: Any, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover - passthrough
             return default
 
+        class ConfigDict(dict):  # pragma: no cover - simple alias
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+
         pydantic_module.BaseModel = BaseModel
         pydantic_module.Field = Field
+        pydantic_module.ConfigDict = ConfigDict
         sys.modules["pydantic"] = pydantic_module
 
 

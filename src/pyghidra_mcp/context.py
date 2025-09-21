@@ -119,6 +119,7 @@ class PyGhidraContext:
         self.project_path = Path(project_path)
         self.project: GhidraProject = self._get_or_create_project()
         self.programs: dict[str, ProgramInfo] = {}
+        self.active_program_name: str | None = None
 
         project_dir = self.project_path / self.project_name
         chromadb_path = project_dir / "chromadb"
@@ -180,6 +181,24 @@ class PyGhidraContext:
     def list_binaries(self) -> list[str]:
         """List all the binaries within the Ghidra project."""
         return [f.getName() for f in self.project.getRootFolder().getFiles()]
+
+    def set_active_program(self, name: str) -> "ProgramInfo":
+        """Set the active program for subsequent tool invocations."""
+
+        program_info = self.get_program_info(name)
+        self.active_program_name = program_info.name
+        return program_info
+
+    def get_active_program_info(self) -> "ProgramInfo":
+        """Return the currently selected program or raise a helpful error."""
+
+        if not self.active_program_name:
+            raise ValueError(
+                "No active program selected. Use select_program(binary_name) or provide "
+                "a binary name."
+            )
+
+        return self.get_program_info(self.active_program_name)
 
     def import_binary(self, binary_path: str | Path, analyze: bool = False) -> None:
         """
