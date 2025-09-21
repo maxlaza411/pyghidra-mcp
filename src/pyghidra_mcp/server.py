@@ -619,6 +619,23 @@ def search_strings(
 
 
 @mcp.tool()
+def project_open(project_path: str, project_name: str, ctx: Context) -> str:
+    """Open or create a Ghidra project at the requested location."""
+
+    def _open(pyghidra_context: PyGhidraContext) -> str:
+        target_path = Path(project_path).expanduser()
+        resolved_path = target_path.resolve()
+        pyghidra_context.open_project(resolved_path, project_name)
+        return f"Project '{project_name}' opened at '{resolved_path}'."
+
+    return _run_tool(
+        ctx,
+        _open,
+        error_message="Error opening project",
+    )
+
+
+@mcp.tool()
 def import_binary(binary_path: str, ctx: Context) -> str:
     """Imports a binary from a designated path into the current Ghidra project.
 
@@ -653,7 +670,13 @@ def init_pyghidra_context(
     # init PyGhidraContext / import + analyze binaries
     logger.info("Server initializing...")
     try:
-        pyghidra_context = PyGhidraContext(project_name, project_directory)
+        project_root = Path(project_directory)
+        pyghidra_context = PyGhidraContext(
+            project_name,
+            project_root,
+            auto_open=False,
+        )
+        pyghidra_context.open_project(project_root, project_name)
         logger.info(f"Importing binaries: {project_directory}")
         pyghidra_context.import_binaries(bin_paths)
         logger.info(f"Analyzing project: {pyghidra_context.project}")
