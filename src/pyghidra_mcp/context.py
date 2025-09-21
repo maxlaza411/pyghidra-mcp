@@ -110,7 +110,7 @@ class PyGhidraContext:
         self.threaded = threaded
         self.max_workers = max_workers
         if not self.threaded:
-            logger.warn("--no-threaded flag forcing max_workers to 1")
+            logger.warning("--no-threaded flag forcing max_workers to 1")
             self.max_workers = 1
 
     def close(self, save: bool = True):
@@ -504,7 +504,7 @@ class PyGhidraContext:
                         self.set_analysis_option(program, k, v)
 
                 if self.no_symbols:
-                    logger.warn(
+                    logger.warning(
                         f"Disabling symbols for analysis! --no-symbols flag: {self.no_symbols}"
                     )
                     self.set_analysis_option(program, "PDB Universal", False)
