@@ -2,10 +2,13 @@
 Comprehensive tool implementations for pyghidra-mcp.
 """
 
+from __future__ import annotations
+
 import functools
 import logging
 import re
 import typing
+from collections.abc import Iterable
 
 from pyghidra_mcp.models import (
     CodeSearchResult,
@@ -45,38 +48,229 @@ def handle_exceptions(func):
 class GhidraTools:
     """Comprehensive tool handler for Ghidra MCP tools"""
 
-    def __init__(self, program_info: "ProgramInfo"):
+    def __init__(self, program_info: ProgramInfo):
         """Initialize with a Ghidra ProgramInfo object"""
         self.program_info = program_info
         self.program = program_info.program
         self.decompiler = program_info.decompiler
 
-    def _get_filename(self, func: "Function"):
-        max_path_len = 12
-        return f"{func.getName()[:max_path_len]}-{func.entryPoint}"
+    def _get_filename(self, func: Function):
+        qualified_name = func.getName(True)
+        entry_point = func.getEntryPoint()
+        safe_name = re.sub(r"[\\/:*?\"<>|]", "_", qualified_name)
+        return f"{safe_name}@{entry_point}"
+
+    @staticmethod
+    def _split_identifier(identifier: str) -> tuple[str, str | None]:
+        if "@" not in identifier:
+            return identifier, None
+        name_part, _, address_part = identifier.partition("@")
+        cleaned_name = name_part.strip() or identifier
+        cleaned_address = address_part.strip() or None
+        return cleaned_name, cleaned_address
+
+    @staticmethod
+    def _normalize_address_text(address_text: str) -> str:
+        value = address_text.strip().lower()
+        if not value:
+            return ""
+        if value.startswith("0x"):
+            value = value[2:]
+        if ":" in value:
+            value = value.split(":")[-1]
+        return value
+
+    def _build_address_indexes(
+        self, functions: list[Function]
+    ) -> tuple[dict[str, Function], dict[str, list[Function]], dict[int, list[Function]]]:
+        entry_lookup: dict[str, Function] = {}
+        normalized_lookup: dict[str, list[Function]] = {}
+        offset_lookup: dict[int, list[Function]] = {}
+        for func in functions:
+            entry_point = func.getEntryPoint()
+            entry_str = str(entry_point)
+            entry_lookup[entry_str] = func
+            normalized = self._normalize_address_text(entry_str)
+            if not normalized:
+                continue
+            normalized_lookup.setdefault(normalized, []).append(func)
+            try:
+                offset_lookup.setdefault(int(normalized, 16), []).append(func)
+            except ValueError:
+                continue
+        return entry_lookup, normalized_lookup, offset_lookup
+
+    def _get_address_from_factory(self, address_text: str):
+        try:
+            return self.program.getAddressFactory().getAddress(address_text)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_offset(normalized: str) -> int | None:
+        try:
+            return int(normalized, 16)
+        except ValueError:
+            return None
+
+    def _find_function_by_address(
+        self,
+        address_text: str | None,
+        fm,
+        functions: list[Function],
+        entry_lookup: dict[str, Function],
+        normalized_lookup: dict[str, list[Function]],
+        offset_lookup: dict[int, list[Function]],
+        candidates: Iterable[Function] | None = None,
+    ) -> Function | None:
+        if not address_text:
+            return None
+        cleaned_address = address_text.strip()
+        if not cleaned_address:
+            return None
+
+        pool = list(candidates) if candidates is not None else functions
+        pool_set = set(pool)
+        potential_matches: list[Function] = []
+
+        direct_match = entry_lookup.get(cleaned_address)
+        if direct_match:
+            potential_matches.append(direct_match)
+
+        address = self._get_address_from_factory(cleaned_address)
+        if address:
+            func_at = fm.getFunctionAt(address)
+            if func_at:
+                potential_matches.append(func_at)
+
+        normalized = self._normalize_address_text(cleaned_address)
+        if normalized:
+            potential_matches.extend(normalized_lookup.get(normalized, []))
+            offset = self._parse_offset(normalized)
+            if offset is not None:
+                potential_matches.extend(offset_lookup.get(offset, []))
+
+        for candidate in potential_matches:
+            if candidate in pool_set:
+                return candidate
+
+        return None
+
+    @staticmethod
+    def _match_functions_by_name(name_hint: str, functions: list[Function]) -> list[Function]:
+        if not name_hint:
+            return []
+        return [
+            func
+            for func in functions
+            if name_hint == func.getName() or name_hint == func.getName(True)
+        ]
+
+    def _resolve_function_by_name(
+        self,
+        name_hint: str,
+        identifier: str,
+        address_hint: str | None,
+        fm,
+        functions: list[Function],
+        entry_lookup: dict[str, Function],
+        normalized_lookup: dict[str, list[Function]],
+        offset_lookup: dict[int, list[Function]],
+    ) -> Function | None:
+        matches = self._match_functions_by_name(name_hint, functions)
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+
+        target = self._find_function_by_address(
+            identifier,
+            fm,
+            functions,
+            entry_lookup,
+            normalized_lookup,
+            offset_lookup,
+            matches,
+        )
+        if target is None and address_hint:
+            target = self._find_function_by_address(
+                address_hint,
+                fm,
+                functions,
+                entry_lookup,
+                normalized_lookup,
+                offset_lookup,
+                matches,
+            )
+        if target is not None:
+            return target
+
+        suggestions = ", ".join(
+            sorted(f"{func.getName(True)}@{func.getEntryPoint()}" for func in matches)
+        )
+        raise ValueError(
+            f"Multiple functions matched '{name_hint}'. "
+            f"Disambiguate using one of: {suggestions}"
+        )
 
     @handle_exceptions
     def decompile_function(self, name: str, timeout: int = 0) -> DecompiledFunction:
         """Decompiles a function in a specified binary and returns its pseudo-C code."""
         from ghidra.util.task import ConsoleTaskMonitor
 
+        identifier = name.strip()
+        if not identifier:
+            raise ValueError("Function identifier is required")
+
         fm = self.program.getFunctionManager()
-        functions = fm.getFunctions(True)
-        for func in functions:
-            if name == func.name:
-                monitor = ConsoleTaskMonitor()
-                result: DecompileResults = self.decompiler.decompileFunction(func, timeout, monitor)
-                if "" == result.getErrorMessage():
-                    code = result.decompiledFunction.getC()
-                    sig = result.decompiledFunction.getSignature()
-                else:
-                    code = result.getErrorMessage()
-                    sig = None
-                return DecompiledFunction(name=self._get_filename(func), code=code, signature=sig)
-        raise ValueError(f"Function {name} not found")
+        functions = list(fm.getFunctions(True))
+        name_hint, address_hint = self._split_identifier(identifier)
+        entry_lookup, normalized_lookup, offset_lookup = self._build_address_indexes(functions)
+
+        target_func = self._find_function_by_address(
+            identifier, fm, functions, entry_lookup, normalized_lookup, offset_lookup
+        )
+        if target_func is None and address_hint:
+            target_func = self._find_function_by_address(
+                address_hint, fm, functions, entry_lookup, normalized_lookup, offset_lookup
+            )
+
+        if target_func is None:
+            target_func = self._resolve_function_by_name(
+                name_hint,
+                identifier,
+                address_hint,
+                fm,
+                functions,
+                entry_lookup,
+                normalized_lookup,
+                offset_lookup,
+            )
+
+        if target_func is None:
+            target_func = entry_lookup.get(identifier)
+        if target_func is None and address_hint:
+            target_func = entry_lookup.get(address_hint)
+
+        if target_func is None:
+            raise ValueError(f"Function {name} not found")
+
+        monitor = ConsoleTaskMonitor()
+        result: DecompileResults = self.decompiler.decompileFunction(
+            target_func, timeout, monitor
+        )
+        if "" == result.getErrorMessage():
+            code = result.decompiledFunction.getC()
+            sig = result.decompiledFunction.getSignature()
+        else:
+            code = result.getErrorMessage()
+            sig = None
+        return DecompiledFunction(
+            name=self._get_filename(target_func), code=code, signature=sig
+        )
 
     @handle_exceptions
-    def get_all_functions(self, include_externals=False) -> list["Function"]:
+    def get_all_functions(self, include_externals=False) -> list[Function]:
         """Gets all functions within a binary."""
 
         funcs = []
@@ -118,8 +312,6 @@ class GhidraTools:
         self, query: str, offset: int = 0, limit: int = 100
     ) -> list[FunctionInfo]:
         """Searches for functions within a binary by name."""
-        from ghidra.program.model.listing import Function
-
         if not query:
             raise ValueError("Query string is required")
 
@@ -268,9 +460,18 @@ class GhidraTools:
             for i, doc in enumerate(results["documents"][0]):
                 metadata = results["metadatas"][0][i]  # type: ignore
                 distance = results["distances"][0][i]  # type: ignore
+                entry_point = metadata.get("entry_point") if metadata else None
+                qualified_name = None
+                if metadata:
+                    qualified_name = metadata.get("qualified_name")
+                if not qualified_name and metadata:
+                    qualified_name = metadata.get("function_name")
+                display_name = str(qualified_name) if qualified_name else ""
+                if entry_point:
+                    display_name = f"{display_name}@{entry_point}"
                 search_results.append(
                     CodeSearchResult(
-                        function_name=str(metadata["function_name"]),
+                        function_name=display_name,
                         code=doc,
                         similarity=1 - distance,
                     )

@@ -344,13 +344,15 @@ class PyGhidraContext:
                 try:
                     if i % 10 == 0:
                         logger.debug(f"Decompiling {i}/{len(functions)}")
-                    decompiled = tools.decompile_function(func.name)
+                    entry_point = str(func.getEntryPoint())
+                    decompiled = tools.decompile_function(entry_point)
                     decompiles.append(decompiled.code)
-                    ids.append(func.name)
+                    ids.append(entry_point)
                     metadatas.append(
                         {
-                            "function_name": func.name,
-                            "entry_point": str(func.getEntryPoint()),
+                            "function_name": func.getName(),
+                            "qualified_name": func.getName(True),
+                            "entry_point": entry_point,
                         }
                     )
                 except Exception as e:

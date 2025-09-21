@@ -202,7 +202,7 @@ Enable LLMs to perform actions, make deterministic computations, and interact wi
 
 #### Decompile Function
 
-- `decompile_function(binary_name: str, name: str)`: Decompile a function from a given binary.
+- `decompile_function(binary_name: str, name: str)`: Decompile a function from a given binary. The `name` argument can be either a fully qualified function name or an entry-point address (hex string).
 
 #### List Exports
 
