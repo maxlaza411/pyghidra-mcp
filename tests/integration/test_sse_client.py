@@ -22,7 +22,7 @@ def sse_server():
     binary_name = "/bin/ls"
     # Start the SSE server
     proc = subprocess.Popen(
-        ["python", "-m", "pyghidra_mcp", "--transport", "sse", binary_name],
+        ["python", "-m", "pyghidra_mcp", "--no-threaded", "--transport", "sse", binary_name],
         env={**os.environ, "GHIDRA_INSTALL_DIR": "/ghidra"},
         stderr=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -62,7 +62,7 @@ async def test_sse_client_smoke(sse_server):
             # Decompile a function
             results = await session.call_tool(
                 "decompile_function",
-                {"binary_name": binary_name, "name": "entry"},
+                {"binary_name": binary_name, "name_or_address": "entry"},
             )
             # We have results!
             assert results is not None

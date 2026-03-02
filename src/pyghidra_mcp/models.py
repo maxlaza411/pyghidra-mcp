@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Any
 
 from mcp.types import ResourceContents
@@ -57,6 +58,7 @@ class FunctionSearchResults(BaseModel):
     )
 
 
+
 class ProgramBasicInfo(BaseModel):
     """Basic information about a program: name and analysis status"""
 
@@ -75,8 +77,8 @@ class ProgramBasicInfos(BaseModel):
 class ProgramInfo(BaseModel):
     """Detailed information about a program (binary) loaded in Ghidra."""
 
-    name: str = Field(..., description="The name of the program.")
-    file_path: str | None = Field(None, description="The file path of the program.")
+    name: str = Field(..., description="The name of the program in Ghidra.")
+    file_path: str | None = Field(None, description="The file path of the program on disk.")
     load_time: float | None = Field(
         None, description="The time it took to load the program in seconds."
     )
@@ -84,7 +86,10 @@ class ProgramInfo(BaseModel):
         ..., description="Indicates if Ghidra's analysis of the program has completed."
     )
     metadata: dict = Field(..., description="A dictionary of metadata associated with the program.")
-    collection: Any | None = Field(None, description="The chromadb collection for the program.")
+    code_collection: bool = Field(..., description="True if the chromadb code collection is ready")
+    strings_collection: bool = Field(
+        ..., description="True if the chromadb strings collection is ready"
+    )
 
 
 class ProgramInfos(BaseModel):
@@ -170,6 +175,7 @@ class SymbolInfo(BaseModel):
     namespace: str = Field(..., description="The namespace of the symbol.")
     source: str = Field(..., description="The source of the symbol.")
     refcount: int = Field(..., description="The reference count of the symbol.")
+    external: bool = Field(..., description="Is symbol external.")
 
 
 class SymbolSearchResults(BaseModel):
@@ -180,20 +186,41 @@ class SymbolSearchResults(BaseModel):
     )
 
 
+class SearchMode(str, Enum):
+    """Search mode for code search."""
+
+    SEMANTIC = "semantic"  # Vector similarity search
+    LITERAL = "literal"  # Exact string match ($contains)
+
+
 class CodeSearchResult(BaseModel):
     """Represents a single search result from the codebase."""
 
     function_name: str = Field(
         ..., description="The name of the function where the code was found."
     )
-    code: str = Field(..., description="The code snippet that matched the search query.")
+    code: str = Field(..., description="The psuedo-c code snippet")
     similarity: float = Field(..., description="The similarity score of the search result.")
+    search_mode: SearchMode = Field(..., description="The search mode used for this result.")
+    preview: str | None = Field(None, description="Truncated preview when include_full_code=False.")
 
 
 class CodeSearchResults(BaseModel):
-    """A container for a list of code search results."""
+    """A container for a list of code search results"""
 
     results: list[CodeSearchResult] = Field(..., description="A list of code search results.")
+    query: str = Field(..., description="The query used for the search.")
+    search_mode: SearchMode = Field(..., description="The search mode used.")
+    # Pagination
+    returned_count: int = Field(..., description="Number of results returned in this response.")
+    offset: int = Field(..., description="Offset used for pagination.")
+    limit: int = Field(..., description="Limit used for pagination.")
+    # Dual-mode counts - ALWAYS populated to help LLM decide on mode switching
+    literal_total: int = Field(
+        ..., description="Total functions containing literal match. 0 if none found."
+    )
+    semantic_total: int = Field(..., description="Estimated total for semantic search.")
+    total_functions: int = Field(..., description="Total number of functions in the binary.")
 
 
 class StringInfo(BaseModel):
@@ -213,3 +240,42 @@ class StringSearchResults(BaseModel):
     """A container for a list of string search results."""
 
     strings: list[StringSearchResult] = Field(..., description="A list of string search results.")
+
+
+class BytesReadResult(BaseModel):
+    """Represents the result of reading raw bytes from memory."""
+
+    address: str = Field(..., description="The normalized address where bytes were read from.")
+    size: int = Field(..., description="The actual number of bytes read.")
+    data: str = Field(..., description="The raw bytes as a hexadecimal string.")
+
+
+class CallGraphDirection(str, Enum):
+    """Represents the direction of the call graph."""
+
+    CALLING = "calling"
+    CALLED = "called"
+
+
+class CallGraphDisplayType(str, Enum):
+    """Represents the display type of the call graph."""
+
+    FLOW = "flow"
+    FLOW_ENDS = "flow_ends"
+    MIND = "mind"
+
+
+class CallGraphResult(BaseModel):
+    """Represents the result of a mermaidjs call graph generation."""
+
+    function_name: str = Field(
+        ..., description="The name of the function for which the call graph was generated."
+    )
+    direction: CallGraphDirection = Field(
+        ..., description="The direction of the call graph (calling or called)."
+    )
+    display_type: CallGraphDisplayType = Field(
+        ..., description="The type of the call graph visualization."
+    )
+    graph: str = Field(..., description="The MermaidJS markdown string for the call graph.")
+    mermaid_url: str = Field(..., description="The MermaidJS image url")

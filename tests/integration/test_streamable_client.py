@@ -19,7 +19,15 @@ base_url = os.getenv("MCP_BASE_URL", "http://127.0.0.1:8000")
 def streamable_server(test_binary):
     """Fixture to start the pyghidra-mcp server in a separate process."""
     proc = subprocess.Popen(
-        ["python", "-m", "pyghidra_mcp", "--transport", "streamable-http", test_binary],
+        [
+            "python",
+            "-m",
+            "pyghidra_mcp",
+            "--wait-for-analysis",
+            "--transport",
+            "streamable-http",
+            test_binary,
+        ],
         env={**os.environ, "GHIDRA_INSTALL_DIR": "/ghidra"},
         stderr=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -63,7 +71,7 @@ async def test_streamable_client_smoke(streamable_server):
             # Decompile a function
             results = await session.call_tool(
                 "decompile_function",
-                {"binary_name": binary_name, "name": "main"},
+                {"binary_name": binary_name, "name_or_address": "main"},
             )
             # We have results!
             assert results is not None

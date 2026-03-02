@@ -31,7 +31,7 @@ Yes, the original [ghidra-mcp](https://github.com/LaurieWired/GhidraMCP) is fant
 - 🐍 **No GUI required** – Run entirely via CLI for streamlined automation and scripting.
 - 🔁 **Designed for automation** – Ideal for integrating with LLMs, CI pipelines, and tooling that needs repeatable behavior.
 - ✅ **CI/CD friendly** – Built with robust unit and integration tests for both client and server sessions.
-- 🚀 **Quick startup** – Supports fast command-line launching with minimal setup.
+- 🚀 **Quick startup** – Asynchronous startup allows the server to start handling requests while binaries are still being analyzed in the background. Supports fast command-line launching with minimal setup.
 - 📦 **Project-wide analysis** – Enables concurrent reverse engineering of all binaries in a Ghidra project
 - 🤖 **Agent-ready** – Built for intelligent agent-driven workflows and large-scale reverse engineering automation.
 - 🔍 Semantic code search – Uses vector embeddings (via ChromaDB) to enable fast, fuzzy lookup across decompiled functions, comments, and symbols—perfect for pseudo-C exploration and agent-driven triage.
@@ -48,7 +48,7 @@ graph TD
 
     subgraph Startup Command
         direction LR
-        cmd("`pyghidra-mcp /path/to/binary1 /path/to/binary2`")
+        cmd("`pyghidra-mcp --project-path /path/to/project --threaded /path/to/binary1`")
     end
 
     subgraph "pyghidra-mcp Server"
@@ -80,14 +80,11 @@ graph TD
 
     subgraph "Exposed MCP API"
         J[decompile_function]
-        K[search_functions_by_name]
     end
 
     D -- "Exposes Tools" --> J
-    D -- "Exposes Tools" --> K
 
     J -- "Results" --> A
-    K -- "Results" --> A
 ```
 
 ## Contents
@@ -97,6 +94,15 @@ graph TD
   - [Yet another Ghidra MCP?](#yet-another-ghidra-mcp)
   - [Contents](#contents)
   - [Getting started](#getting-started)
+  - [CLI Client](#cli-client)
+  - [Project Creation, Management, and Opening Existing Projects](#project-creation-management-and-opening-existing-projects)
+    - [Creating New Projects](#creating-new-projects)
+      - [Self-Contained Project Structure](#self-contained-project-structure)
+      - [Basic Project Creation](#basic-project-creation)
+      - [Custom Project Creation](#custom-project-creation)
+      - [Creating Multiple Related Projects](#creating-multiple-related-projects)
+    - [Opening Existing Ghidra Projects](#opening-existing-ghidra-projects)
+      - [Opening by .gpr File](#opening-by-gpr-file)
   - [Development](#development)
     - [Setup](#setup)
     - [Testing and Quality](#testing-and-quality)
@@ -104,12 +110,16 @@ graph TD
     - [Tools](#tools)
       - [Code Search](#code-search)
       - [Cross-References](#cross-references)
+      - [Generate Call Graph](#generate-call-graph)
       - [Decompile Function](#decompile-function)
+      - [Import Binary](#import-binary)
       - [List Exports](#list-exports)
       - [List Imports](#list-imports)
       - [List Project Binaries](#list-project-binaries)
-      - [List Project Program Info](#list-project-program-info)
-      - [Search Functions](#search-functions)
+      - [List Project Binary Metadata](#list-project-binary-metadata)
+      - [Delete Project Binary](#delete-project-binary)
+      - [Read Bytes](#read-bytes)
+      - [Search Strings](#search-strings)
       - [Search Symbols](#search-symbols)
     - [Prompts](#prompts)
     - [Resources](#resources)
@@ -131,13 +141,14 @@ graph TD
     - [Claude Desktop](#claude-desktop)
   - [Inspiration](#inspiration)
   - [Contributing, community, and running from source](#contributing-community-and-running-from-source)
+    - [Contributor workflow](#contributor-workflow)
 
 ## Getting started
 
 Run the [Python package](https://pypi.org/p/pyghidra-mcp) as a CLI command using [`uv`](https://docs.astral.sh/uv/guides/tools/):
 
 ```bash
-uvx pyghidra-mcp # see --help for more options
+uvx pyghidra-mcp # Creates pyghidra_mcp_projects directory by default
 ```
 
 Or, run as a [Docker container](https://ghcr.io/clearbluejar/pyghidra-mcp):
@@ -145,6 +156,116 @@ Or, run as a [Docker container](https://ghcr.io/clearbluejar/pyghidra-mcp):
 ```bash
 docker run -i --rm ghcr.io/clearbluejar/pyghidra-mcp -t stdio
 ```
+
+## CLI Client
+
+For a more interactive command-line experience, you can use the separate **pyghidra-mcp-cli** package, which provides a user-friendly interface for interacting with a running pyghidra-mcp server.
+
+### Installation
+
+Install the CLI client using [`uv`](https://docs.astral.sh/uv/) (recommended):
+
+```bash
+uvx pyghidra-mcp-cli
+```
+
+Or install with pip:
+
+```bash
+pip install pyghidra-mcp-cli
+```
+
+### Quick Start with CLI
+
+1. **Start the server** (in one terminal):
+```bash
+pyghidra-mcp --transport streamable-http /bin/ls
+```
+
+2. **Use the CLI** (in another terminal):
+```bash
+# List available binaries
+pyghidra-mcp-cli list binaries
+
+# Decompile a function
+pyghidra-mcp-cli decompile --binary ls main
+
+# Search for symbols
+pyghidra-mcp-cli search symbols --binary ls printf -l 10
+```
+
+> [!NOTE]
+> The CLI connects to pyghidra-mcp via HTTP to avoid the 10-60 second startup overhead of spawning a new Ghidra process for each command. See the [CLI README](./cli/README.md) for complete documentation.
+
+## Project Creation, Management, and Opening Existing Projects
+
+### Creating New Projects
+
+You can create new projects in several ways, depending on your workflow:
+
+#### Self-Contained Project Structure
+
+`pyghidra-mcp` creates a **self-contained project structure** where each project has its own Ghidra project and pyghidra-mcp artifacts. This ensures complete isolation and easy project management.
+
+#### Basic Project Creation
+
+```bash
+# Create a new project with default settings
+pyghidra_mcp
+
+# Creates: 
+$ tree pyghidra_mcp_projects/
+pyghidra_mcp_projects/
+├── my_project.gpr
+├── my_project-pyghidra-mcp
+│   ├── chromadb
+│   └── gzfs
+└── my_project.rep
+```
+
+#### Custom Project Creation
+
+```bash
+# Create project with custom name and location
+pyghidra_mcp --project-path ~/analysis/malware_study --project-name malware_analysis
+
+$ tree ~/analysis/ 
+/home/vscode/analysis/
+└── malware_study
+    ├── malware_analysis.gpr
+    ├── malware_analysis-pyghidra-mcp
+    │   ├── chromadb
+    │   └── gzfs
+    └── malware_analysis.rep
+```
+
+#### Creating Multiple Related Projects
+
+```bash
+# Create separate projects for different analysis focuses
+mkdir ~/reverse_engineering_workspace
+
+# Project for suspicious binaries
+pyghidra_mcp --project-path ~/reverse_engineering_workspace/suspicious_binaries --project-name suspicious_analysis
+
+# Project for packed malware  
+pyghidra_mcp --project-path ~/reverse_engineering_workspace/packed_malware --project-name packed_analysis
+```
+
+### Opening Existing Ghidra Projects
+
+If you have existing Ghidra projects (`.gpr` files), you can open them directly with `pyghidra-mcp`:
+
+#### Opening by .gpr File
+
+```bash
+# Open existing Ghidra project (project name derived from filename)
+pyghidra_mcp --project-path ~/existing/ghidra/my_research.gpr
+
+# Result: ~/existing/ghidra/my_research-pyghidra-mcp/
+# └── chromadb/, gzfs/ (pyghidra-mcp additions)
+```
+
 
 ## Development
 
@@ -177,6 +298,7 @@ This project uses a `Makefile` to streamline development and testing. `ruff` is 
 
 The `Makefile` provides several targets for testing and code quality:
 
+- `make run`: Run the MCP server.
 - `make test`: Run the full test suite (unit and integration).
 - `make test-unit`: Run unit tests.
 - `make test-integration`: Run integration tests.
@@ -185,6 +307,8 @@ The `Makefile` provides several targets for testing and code quality:
 - `make typecheck`: Run type checking with `ruff`.
 - `make check`: Run all quality checks.
 - `make dev`: Run the development workflow (format and check).
+- `make build`: Build distribution packages.
+- `make clean`: Clean build artifacts and cache.
 
 ## API
 
@@ -194,11 +318,15 @@ Enable LLMs to perform actions, make deterministic computations, and interact wi
 
 #### Code Search
 
-- `search_code(binary_name: str, query: str, limit: int = 10)`: Search for code within a binary by similarity using vector embeddings.
+- `search_code(binary_name: str, query: str, limit: int = 5)`: Search for code within a binary by similarity using vector embeddings.
 
 #### Cross-References
 
 - `list_cross_references(binary_name: str, name_or_address: str)`: Finds and lists all cross-references (x-refs) to a given function or address.
+
+#### Generate Call Graph
+
+- `gen_callgraph(binary_name: str, function_name_or_address: str, direction: str = "calling", display_type: str = "flow", include_refs: bool = True, max_depth: int | None = None, max_run_time: int = 60, condense_threshold: int = 50, top_layers: int = 5, bottom_layers: int = 5)`: Generates a MermaidJS call graph for a specified function. Supports both "calling" (functions called by the target) and "called" (functions that call the target) directions with multiple visualization types.
 
 #### Decompile Function
 
@@ -206,25 +334,39 @@ Enable LLMs to perform actions, make deterministic computations, and interact wi
   `name` parameter accepts either an entry-point address (hex string) or a fully-qualified function
   name, enabling precise selection for overloaded or namespaced symbols.
 
+#### Import Binary
+
+- `import_binary(binary_path: str)`: Imports a binary from a designated path into the current Ghidra project. If the path is a directory, it will recursively scan and import all supported binary files, preserving the directory structure within the Ghidra project.
+
 #### List Exports
 
-- `list_exports(binary_name: str, query: str | None = None, offset: int = 0, limit: int = 25)`: Lists all exported functions and symbols from a specified binary (regex supported for query).
+- `list_exports(binary_name: str, query: str = ".*", offset: int = 0, limit: int = 25)`: Lists all exported functions and symbols from a specified binary (regex supported for query).
 
 #### List Imports
 
-- `list_imports(binary_name: str, query: str | None = None, offset: int = 0, limit: int = 25)`: Lists all imported functions and symbols for a specified binary (regex supported for query).
+- `list_imports(binary_name: str, query: str = ".*", offset: int = 0, limit: int = 25)`: Lists all imported functions and symbols for a specified binary (regex supported for query).
 
 #### List Project Binaries
 
 - `list_project_binaries()`: Lists the names of all binaries currently loaded in the Ghidra project.
 
-#### List Project Program Info
+#### List Project Binary Metadata
 
-- `list_project_program_info()`: Retrieves detailed information for all programs (binaries) in the project.
+- `list_project_binary_metadata(binary_name: str)`: Retrieves detailed metadata for a specific binary, including architecture, compiler, executable format, analysis metrics, and file hashes.
 
-#### Search Functions
+#### Delete Project Binary
 
-- `search_functions_by_name(binary_name: str, query: str, offset: int = 0, limit: int = 25)`: Search for functions within a binary by name (case-insensitive substring).
+- `delete_project_binary(binary_name: str)`: Deletes a binary (program) from the Ghidra project.
+
+#### Read Bytes
+
+- `read_bytes(binary_name: str, address: str, size: int = 32)`: Reads raw bytes from memory at a specified address. Returns raw hex data. Useful for inspecting memory contents, data structures, or confirming analysis findings.
+
+
+
+#### Search Strings
+
+- `search_strings(binary_name: str, query: str, limit: int = 100)`: Searches for strings within a binary by name.
 
 #### Search Symbols
 
@@ -251,20 +393,54 @@ Expose data and content to LLMs
 This Python package is published to PyPI as [pyghidra-mcp](https://pypi.org/p/pyghidra-mcp) and can be installed and run with [pip](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/#install-a-package), [pipx](https://pipx.pypa.io/), [uv](https://docs.astral.sh/uv/), [poetry](https://python-poetry.org/), or any Python package manager.
 
 ```text
-$ pipx install pyghidra-mcp
-$ pyghidra-mcp --help
+$ uvx pyghidra-mcp --help
+Usage: pyghidra-mcp [OPTIONS] [INPUT_PATHS]...
 
-Usage: pyghidra-mcp [OPTIONS]
+  PyGhidra Command-Line MCP server
 
-  Entry point for the MCP server
-
-  Supports both stdio and sse transports. For stdio, it will read from stdin
-  and write to stdout. For sse, it will start an HTTP server on port 8000.
+  - input_paths: Path to one or more binaries to import, analyze, and expose with pyghidra-mcp
+  - transport: Supports stdio, streamable-http, and sse transports.
+  For stdio, it will read from stdin and write to stdout.
+  For streamable-http and sse, it will start an HTTP server on the specified port (default 8000).
 
 Options:
-  -v, --version                Show version and exit.
-  -t, --transport [stdio|sse|streamable-http]  Transport protocol to use (stdio, sse or streamable-http)
-  -h, --help                   Show this message and exit.
+  -v, --version                     Show version and exit.
+  -t, --transport [stdio|streamable-http|sse]
+                                    Transport protocol to use: stdio,
+                                    streamable-http, or sse (legacy).
+  --project-path PATH               Location on disk which points to the Ghidra
+                                    project to use. Can be an existing file.
+                                    [default: pyghidra_mcp_projects]
+  --project-name TEXT               Name for the project (used for Ghidra project
+                                    files). Ignored when using .gpr files.
+                                    [default: my_project]
+  -p, --port INTEGER                Port to listen on for HTTP-based transports
+                                    (streamable-http, sse). [default: 8000]
+  -o, --host TEXT                   Host to listen on for HTTP-based transports
+                                    (streamable-http, sse). [default: 127.0.0.1]
+  --threaded / --no-threaded        Allow threaded analysis. Disable for debug.
+                                    [default: threaded]
+  --force-analysis / --no-force-analysis
+                                    Force a new binary analysis each run.
+                                    [default: no-force-analysis]
+  --verbose-analysis / --no-verbose-analysis
+                                    Verbose logging for analysis step.
+                                    [default: no-verbose-analysis]
+  --no-symbols / --with-symbols     Turn off symbols for analysis.
+                                    [default: no-symbols]
+  --gdt PATH                        Path to a GDT file for analysis. Can be
+                                    specified multiple times.
+  --program-options PATH            Path to a JSON file containing program
+                                    options (custom analyzer settings).
+  --gzfs-path PATH                  Location to store GZFs of analyzed
+                                    binaries.
+  --max-workers INTEGER             Number of workers for threaded analysis.
+                                    Defaults to CPU count. [default: 0]
+  --wait-for-analysis / --no-wait-for-analysis
+                                    Wait for initial project analysis to
+                                    complete before starting the server.
+                                    [default: no-wait-for-analysis]
+  -h, --help                        Show this message and exit.
 ```
 
 ### Mapping Binaries with Docker
@@ -388,15 +564,22 @@ Add the following JSON block to your `claude_desktop_config.json` file:
 
 ```json
 {
-  "mcpServers": {
-    "pyghidra-mcp": {
-      "command": "uvx",
-      "args": ["pyghidra-mcp", "/bin/ls", "/bin/jq", "/path/to/bin" ],
-      "env": {
-        "GHIDRA_INSTALL_DIR": "/path/to/ghidra"
-      }
+    "mcpServers": {
+        "pyghidra-mcp": {
+            "command": "uvx",
+            "args": [
+                "--from",
+                "git+https://github.com/clearbluejar/pyghidra-mcp",
+                "pyghidra-mcp",
+                "--project-path",
+                "/tmp/pyghidra", // or path to writeable directory
+                "/bin/ls" //
+            ],
+            "env": {
+                "GHIDRA_INSTALL_DIR": "/path/to/ghidra/ghidra_12.0_PUBLIC"
+            }
+        }
     }
-  }
 }
 ```
 ## Inspiration

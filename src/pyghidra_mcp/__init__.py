@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 from .context import ProgramInfo, PyGhidraContext
 from .tools import GhidraTools
 
-__version__ = "0.1.9"
+__version__ = "0.1.14"
 __author__ = "clearbluejar"
 
 

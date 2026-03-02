@@ -1,5 +1,7 @@
+import json
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 from mcp import StdioServerParameters
@@ -86,7 +88,7 @@ def server_params_no_input():
     return StdioServerParameters(
         command="python",  # Executable
         # Run with test binary
-        args=["-m", "pyghidra_mcp"],
+        args=["-m", "pyghidra_mcp", "--wait-for-analysis"],
         # Optional environment variables
         env={"GHIDRA_INSTALL_DIR": "/ghidra"},
     )
@@ -98,7 +100,19 @@ def server_params(test_binary):
     return StdioServerParameters(
         command="python",  # Executable
         # Run with test binary
-        args=["-m", "pyghidra_mcp", test_binary],
+        args=["-m", "pyghidra_mcp", "--wait-for-analysis", test_binary],
+        # Optional environment variables
+        env={"GHIDRA_INSTALL_DIR": "/ghidra"},
+    )
+
+
+@pytest.fixture(scope="module")
+def server_params_no_thread(test_binary):
+    """Get server parameters with a test binary."""
+    return StdioServerParameters(
+        command="python",  # Executable
+        # Run with test binary
+        args=["-m", "pyghidra_mcp", "--no-threaded", test_binary],  # no-thread for chromadb_testing
         # Optional environment variables
         env={"GHIDRA_INSTALL_DIR": "/ghidra"},
     )
@@ -110,7 +124,64 @@ def server_params_shared_object(test_shared_object):
     return StdioServerParameters(
         command="python",  # Executable
         # Run with test binary
-        args=["-m", "pyghidra_mcp", test_shared_object],
+        args=["-m", "pyghidra_mcp", "--wait-for-analysis", test_shared_object],
         # Optional environment variables
+        env={"GHIDRA_INSTALL_DIR": "/ghidra"},
+    )
+
+
+@pytest.fixture()
+def find_binary_in_list_response():
+    """Return a helper that finds a binary by generated name in a list_project_binaries response."""
+
+    def _finder(response, binary_name):
+        text_content = response.content[0].text
+        program_infos = json.loads(text_content)["programs"]
+
+        for program in program_infos:
+            if binary_name in program["name"]:
+                return program
+
+        return None
+
+    return _finder
+
+
+@pytest.fixture(scope="module")
+def server_params_existing_notepad_project():
+    """Server with existing notepad project from other_projects/"""
+    project_path = Path(__file__).parent.parent.parent / "other_projects" / "notepad.gpr"
+    return StdioServerParameters(
+        command="python",
+        args=["-m", "pyghidra_mcp", "--project-path", str(project_path), "--wait-for-analysis"],
+        env={"GHIDRA_INSTALL_DIR": "/ghidra"},
+    )
+
+
+@pytest.fixture(scope="module")
+def custom_project_directory():
+    """Create temporary directory for custom named projects"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        yield Path(temp_dir)
+
+
+@pytest.fixture(scope="module")
+def server_params_custom_project_name(custom_project_directory):
+    """Server with custom project path and name"""
+    custom_project = custom_project_directory / "my_analysis_project"
+    return StdioServerParameters(
+        command="python",
+        args=["-m", "pyghidra_mcp", "--project-path", str(custom_project), "--wait-for-analysis"],
+        env={"GHIDRA_INSTALL_DIR": "/ghidra"},
+    )
+
+
+@pytest.fixture(scope="module")
+def server_params_nested_project_location(custom_project_directory):
+    """Server with nested project location"""
+    nested_project = custom_project_directory / "deeply/nested/location/test_project"
+    return StdioServerParameters(
+        command="python",
+        args=["-m", "pyghidra_mcp", "--project-path", str(nested_project), "--wait-for-analysis"],
         env={"GHIDRA_INSTALL_DIR": "/ghidra"},
     )
