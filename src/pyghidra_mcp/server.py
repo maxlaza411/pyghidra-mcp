@@ -51,6 +51,8 @@ mcp = FastMCP("pyghidra-mcp", lifespan=server_lifespan)  # type: ignore
 
 # Register tools from mcp_tools module
 # ---------------------------------------------------------------------------------
+
+# ── Existing tools ────────────────────────────────────────────────────────────
 mcp.tool()(mcp_tools.decompile_function)
 mcp.tool()(mcp_tools.get_function_disassembly)
 mcp.tool()(mcp_tools.get_function_pcode)
@@ -70,6 +72,41 @@ mcp.tool()(mcp_tools.import_binary)
 mcp.tool()(mcp_tools.analyze_now)
 mcp.tool()(mcp_tools.project_open)
 mcp.tool()(mcp_tools.select_program)
+
+# ── Annotation / mutation tools ───────────────────────────────────────────────
+mcp.tool()(mcp_tools.rename_function)
+mcp.tool()(mcp_tools.rename_variable)
+mcp.tool()(mcp_tools.set_comment)
+mcp.tool()(mcp_tools.set_function_signature)
+mcp.tool()(mcp_tools.create_label)
+
+# ── Navigation tools ──────────────────────────────────────────────────────────
+mcp.tool()(mcp_tools.list_functions)
+mcp.tool()(mcp_tools.list_namespaces)
+mcp.tool()(mcp_tools.get_function_containing)
+mcp.tool()(mcp_tools.list_basic_blocks)
+mcp.tool()(mcp_tools.get_entry_points)
+
+# ── Memory tools ──────────────────────────────────────────────────────────────
+mcp.tool()(mcp_tools.list_memory_segments)
+mcp.tool()(mcp_tools.find_byte_pattern)
+mcp.tool()(mcp_tools.list_all_strings)
+
+# ── Data type tools ───────────────────────────────────────────────────────────
+mcp.tool()(mcp_tools.list_data_types)
+mcp.tool()(mcp_tools.get_data_type)
+mcp.tool()(mcp_tools.create_struct)
+mcp.tool()(mcp_tools.apply_data_type)
+mcp.tool()(mcp_tools.get_data_at)
+mcp.tool()(mcp_tools.get_stack_frame)
+
+# ── Composite / context tools ─────────────────────────────────────────────────
+mcp.tool()(mcp_tools.get_function_context)
+mcp.tool()(mcp_tools.get_binary_summary)
+mcp.tool()(mcp_tools.decompile_functions_batch)
+
+# ── Script execution ──────────────────────────────────────────────────────────
+mcp.tool()(mcp_tools.run_python_script)
 
 
 def init_pyghidra_context(

@@ -268,6 +268,8 @@ class CallGraphDisplayType(str, Enum):
 class CallGraphResult(BaseModel):
     """Represents the result of a mermaidjs call graph generation."""
 
+    model_config = ConfigDict(exclude_none=True)
+
     function_name: str = Field(
         ..., description="The name of the function for which the call graph was generated."
     )
@@ -278,4 +280,219 @@ class CallGraphResult(BaseModel):
         ..., description="The type of the call graph visualization."
     )
     graph: str = Field(..., description="The MermaidJS markdown string for the call graph.")
-    mermaid_url: str = Field(..., description="The MermaidJS image url")
+    mermaid_url: str | None = Field(None, description="The MermaidJS image url (opt-in).")
+
+
+# ── New models added for expanded RE capabilities ─────────────────────────────
+
+
+class MutationResult(BaseModel):
+    """Result of a write/mutation operation (rename, comment, label, signature)."""
+
+    model_config = ConfigDict(exclude_none=True)
+
+    success: bool = Field(..., description="Whether the operation succeeded.")
+    message: str = Field(..., description="Human-readable status message.")
+    details: dict | None = Field(None, description="Optional extra details about the change.")
+
+
+class FunctionListItem(BaseModel):
+    """Compact representation of a single function for listing."""
+
+    model_config = ConfigDict(exclude_none=True)
+
+    name: str = Field(..., description="Fully-qualified function name.")
+    address: str = Field(..., description="Entry point address.")
+    namespace: str = Field(..., description="Parent namespace.")
+    signature: str | None = Field(None, description="Function signature if available.")
+
+
+class FunctionListResult(BaseModel):
+    """Paginated list of functions."""
+
+    functions: list[FunctionListItem] = Field(..., description="Functions in this page.")
+    total: int = Field(..., description="Total matching functions before pagination.")
+    offset: int = Field(..., description="Offset used.")
+    limit: int = Field(..., description="Limit used.")
+
+
+class NamespaceInfo(BaseModel):
+    """A namespace or class defined in the binary."""
+
+    model_config = ConfigDict(exclude_none=True)
+
+    name: str = Field(..., description="Short name of the namespace/class.")
+    full_path: str = Field(..., description="Fully-qualified path.")
+    type: str = Field(..., description="NAMESPACE or CLASS.")
+    parent: str | None = Field(None, description="Parent namespace (None if global).")
+
+
+class BasicBlockInfo(BaseModel):
+    """A single basic block in a function's control-flow graph."""
+
+    start: str = Field(..., description="Start address of the block.")
+    end: str = Field(..., description="End (max) address of the block.")
+    num_instructions: int = Field(..., description="Number of instructions in the block.")
+    successors: list[str] = Field(..., description="Start addresses of successor blocks.")
+
+
+class BasicBlocksResult(BaseModel):
+    """CFG basic blocks for a function."""
+
+    function_name: str = Field(..., description="Fully-qualified function name.")
+    entry_point: str = Field(..., description="Function entry point address.")
+    blocks: list[BasicBlockInfo] = Field(..., description="All basic blocks.")
+
+
+class MemorySegmentInfo(BaseModel):
+    """One memory segment/block from the binary's memory map."""
+
+    name: str = Field(..., description="Block name (e.g. '.text', '.data').")
+    start: str = Field(..., description="Start address.")
+    end: str = Field(..., description="End address.")
+    size: int = Field(..., description="Size in bytes.")
+    readable: bool = Field(..., description="Read permission.")
+    writable: bool = Field(..., description="Write permission.")
+    executable: bool = Field(..., description="Execute permission.")
+    initialized: bool = Field(..., description="Whether the block has initialized data.")
+    type: str = Field(..., description="Block type string from Ghidra.")
+
+
+class MemoryMapResult(BaseModel):
+    """Full memory map for a binary."""
+
+    segments: list[MemorySegmentInfo] = Field(..., description="All memory segments.")
+
+
+class DataTypeInfo(BaseModel):
+    """Summary of a data type defined in the binary."""
+
+    model_config = ConfigDict(exclude_none=True)
+
+    name: str = Field(..., description="Type name.")
+    category: str = Field(..., description="Category path (e.g. '/RTTI').")
+    display_name: str = Field(..., description="Display name including size hint.")
+    type_class: str = Field(..., description="Class: Structure, Enum, Typedef, Pointer, etc.")
+    size: int | None = Field(None, description="Size in bytes if known.")
+
+
+class DataTypeListResult(BaseModel):
+    """Paginated list of data types."""
+
+    data_types: list[DataTypeInfo] = Field(..., description="Data types in this page.")
+    total: int = Field(..., description="Total data types in the binary.")
+
+
+class StackVariableInfo(BaseModel):
+    """One variable in a function's stack frame."""
+
+    model_config = ConfigDict(exclude_none=True)
+
+    name: str = Field(..., description="Variable name.")
+    type_name: str = Field(..., description="Data type name.")
+    offset: int = Field(..., description="Stack offset (negative = below saved SP).")
+    size: int | None = Field(None, description="Size in bytes.")
+    kind: str = Field(..., description="'param' or 'local'.")
+
+
+class StackFrameResult(BaseModel):
+    """Full stack frame layout for a function."""
+
+    model_config = ConfigDict(exclude_none=True)
+
+    function_name: str = Field(..., description="Fully-qualified function name.")
+    entry_point: str = Field(..., description="Entry point address.")
+    signature: str | None = Field(None, description="Function signature.")
+    stack_frame_size: int = Field(..., description="Total stack frame size in bytes.")
+    parameters: list[StackVariableInfo] = Field(..., description="Parameters.")
+    locals: list[StackVariableInfo] = Field(..., description="Local variables.")
+
+
+class BytePatternMatch(BaseModel):
+    """A single match from a byte-pattern search."""
+
+    model_config = ConfigDict(exclude_none=True)
+
+    address: str = Field(..., description="Address of the match.")
+    matched_bytes: str = Field(..., description="Matched bytes as hex string.")
+    containing_function: str | None = Field(None, description="Function that contains this address.")
+
+
+class BytePatternResult(BaseModel):
+    """Result of a byte-pattern search."""
+
+    pattern: str = Field(..., description="The original pattern searched for.")
+    matches: list[BytePatternMatch] = Field(..., description="All matches found.")
+    total: int = Field(..., description="Total number of matches found.")
+
+
+class StringListResult(BaseModel):
+    """Paginated list of strings from a binary."""
+
+    strings: list[StringInfo] = Field(..., description="Strings in this page.")
+    total: int = Field(..., description="Total matching strings before pagination.")
+    offset: int = Field(..., description="Offset used.")
+    limit: int = Field(..., description="Limit used.")
+
+
+class DecompiledFunctionSummary(BaseModel):
+    """Compact decompiled function used inside composite context tools."""
+
+    model_config = ConfigDict(exclude_none=True)
+
+    name: str = Field(..., description="Fully-qualified function name.")
+    signature: str | None = Field(None, description="Function signature.")
+    code: str = Field(..., description="Decompiled pseudo-C code.")
+
+
+class FunctionContextResult(BaseModel):
+    """Rich context for a single function: decompilation + call graph + xrefs + callee code."""
+
+    model_config = ConfigDict(exclude_none=True)
+
+    function: DecompiledFunction = Field(..., description="Full decompilation of the target.")
+    entry_point: str = Field(..., description="Entry point address.")
+    callers: list[str] = Field(..., description="Names of functions that call this one.")
+    callees: list[str] = Field(..., description="Names of functions called by this one.")
+    xrefs: list[CrossReferenceInfo] = Field(..., description="Cross-references to this function.")
+    callee_summaries: list[DecompiledFunctionSummary] = Field(
+        ..., description="Decompiled code for each callee (depth=1, max 10)."
+    )
+
+
+class ImportCategory(BaseModel):
+    """Imports grouped by functional category."""
+
+    category: str = Field(..., description="Category name (network, file_io, crypto, etc.).")
+    functions: list[str] = Field(..., description="Import names in this category.")
+
+
+class BinarySummaryResult(BaseModel):
+    """AI-optimised triage summary of a binary for fast orientation."""
+
+    model_config = ConfigDict(exclude_none=True)
+
+    binary_name: str = Field(..., description="Name of the binary.")
+    architecture: str | None = Field(None, description="Architecture/language description.")
+    entry_points: list[str] = Field(..., description="Entry point addresses/names.")
+    function_count: int = Field(..., description="Total number of functions.")
+    import_categories: list[ImportCategory] = Field(
+        ..., description="Imports grouped by category."
+    )
+    interesting_strings: list[str] = Field(
+        ..., description="Heuristically selected interesting strings."
+    )
+    memory_segments: list[MemorySegmentInfo] = Field(..., description="Memory map overview.")
+    top_exports: list[str] = Field(..., description="Up to 20 exported symbol names.")
+
+
+class ScriptResult(BaseModel):
+    """Result of executing a Python script against the binary."""
+
+    model_config = ConfigDict(exclude_none=True)
+
+    output: str = Field(..., description="Captured stdout from the script.")
+    error: str | None = Field(None, description="Exception message if the script raised.")
+    result: str | None = Field(
+        None, description="str(__result__) if the script set __result__ = ..."
+    )
